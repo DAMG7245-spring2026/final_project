@@ -99,8 +99,9 @@ def cmd_preview(args: argparse.Namespace) -> int:
 
 def cmd_load_snowflake(args: argparse.Namespace) -> int:
     load_dotenv(ROOT / ".env")
+    from ingestion.cwe.loader import load_cwe_records
     from ingestion.cwe.snowflake_load import load_cwe_records_to_snowflake
-    from ingestion.cwe.transform import load_transformed_json, transform_catalog_to_records
+    from ingestion.cwe.transform import load_transformed_json
 
     has_in = bool(args.input)
     has_tf = bool(args.from_transformed)
@@ -117,14 +118,13 @@ def cmd_load_snowflake(args: argparse.Namespace) -> int:
             print(f"File not found: {p}", file=sys.stderr)
             return 1
         records = load_transformed_json(p)
+        n = load_cwe_records_to_snowflake(records)
     else:
         p = Path(args.input).expanduser()
         if not p.is_file():
             print(f"Catalog file not found: {p}", file=sys.stderr)
             return 1
-        records = transform_catalog_to_records(p)
-
-    n = load_cwe_records_to_snowflake(records)
+        n = load_cwe_records(p)
     print(f"Processed {n} rows (MERGE into cwe_records).")
     return 0
 

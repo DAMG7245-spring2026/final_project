@@ -51,6 +51,8 @@ To apply the same DDL from the CLI using `.env` credentials: `poetry run python 
 
    Or load exactly what you saved: `load-snowflake --from-transformed data/cwe_transformed_preview.json`.
 
+   Programmatic API (report Task 5.1): `from ingestion.cwe.loader import load_cwe_records` then `load_cwe_records("data/cwec_catalog.json")`.
+
 ## Running Locally
 
 ```bash

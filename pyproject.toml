@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "PE Org-AI-R Platform - AI Readiness Assessment for Private Equity"
 authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
-packages = [{include = "app"}]
+packages = [{include = "app"}, {include = "ingestion"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -36,7 +36,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --cov=app --cov-report=term-missing"
+addopts = "-v --cov=app --cov=ingestion --cov-report=term-missing"
 
 [tool.black]
 line-length = 88

@@ -129,3 +129,8 @@ tmp/
 temp/
 *.tmp
 *.temp
+
+# ==============================================
+# Local data (CWE catalogs, previews, downloads — regenerate via scripts)
+# ==============================================
+data/

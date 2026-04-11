@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config import get_settings
-from app.routers import health_router
+from app.routers import advisories_router, health_router
 
 # Configure logging
 logging.basicConfig(
@@ -68,6 +68,7 @@ def create_app() -> FastAPI:
     
     # Include routers
     app.include_router(health_router)
+    app.include_router(advisories_router)
     
     # Global exception handler
     @app.exception_handler(Exception)

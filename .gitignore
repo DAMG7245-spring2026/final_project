@@ -134,3 +134,5 @@ temp/
 # Local data (CWE catalogs, previews, downloads — regenerate via scripts)
 # ==============================================
 data/
+# Local docs
+doc/

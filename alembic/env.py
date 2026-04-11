@@ -25,10 +25,11 @@ password  = quote_plus(os.environ["SNOWFLAKE_PASSWORD"])  # handles special char
 database  = os.environ["SNOWFLAKE_DATABASE"]
 schema    = os.environ["SNOWFLAKE_SCHEMA"]
 warehouse = os.environ["SNOWFLAKE_WAREHOUSE"]
+role      = os.environ.get("SNOWFLAKE_ROLE", "SYSADMIN")
 
 snowflake_url = (
     f"snowflake://{user}:{password}@{account}"
-    f"/{database}/{schema}?warehouse={warehouse}"
+    f"/{database}/{schema}?warehouse={warehouse}&role={role}"
 )
 # configparser treats % as interpolation; escape it by doubling
 config.set_main_option("sqlalchemy.url", snowflake_url.replace("%", "%%"))

@@ -64,6 +64,21 @@ CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
 CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
 MITRE_RE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
 
+# Document-type classification patterns
+STOPRANSOMWARE_RE = re.compile(r"#?\s*stopransomware", re.IGNORECASE)
+IR_LESSONS_RE = re.compile(
+    r"lessons learned|incident response engagement|ir engagement",
+    re.IGNORECASE,
+)
+MAR_RE = re.compile(r"\bMAR[-\u2010-\u2015\s]?\d|malware analysis report", re.IGNORECASE)
+
+# Known authoring agencies appearing in joint CSAs — used as a fallback
+# signal when _extract_co_authors() finds nothing.
+AUTHORING_AGENCY_RE = re.compile(
+    r"\b(CISA|FBI|NSA|DHS|DOE|HHS|DoD|MS-ISAC|NCSC(?:-[A-Z]+)?|ACSC|ASD|CCCS|"
+    r"ANSSI|BSI|KISA|JPCERT(?:/CC)?|NCA|CERT-NZ|SingCERT|CSE|USSS|USCG|EPA)\b"
+)
+
 ENCODING = tiktoken.get_encoding("cl100k_base")
 
 
@@ -104,11 +119,11 @@ def _get_snowflake_conn():
     )
 
 
-def _get_unprocessed_advisories(conn) -> list[tuple[str, str]]:
-    """Return (advisory_id, s3_raw_path) for advisories not yet chunked."""
+def _get_unprocessed_advisories(conn) -> list[tuple[str, str, str, str]]:
+    """Return (advisory_id, s3_raw_path, title, advisory_type) for advisories not yet chunked."""
     cur = conn.cursor()
     cur.execute("""
-        SELECT advisory_id, s3_raw_path
+        SELECT advisory_id, s3_raw_path, title, advisory_type
         FROM advisories
         WHERE advisory_id NOT IN (
             SELECT DISTINCT advisory_id FROM advisory_chunks
@@ -155,8 +170,9 @@ def _update_advisories_metadata(
     advisory_id: str,
     chunks: list["Chunk"],
     co_authors: list[str],
+    document_type: str,
 ):
-    """Backfill cve_ids_mentioned, mitre_ids_mentioned, co_authors in ADVISORIES."""
+    """Backfill cve_ids_mentioned, mitre_ids_mentioned, co_authors, document_type in ADVISORIES."""
     all_cve = list({cve for c in chunks for cve in c.cve_ids})
     all_mitre = list({m for c in chunks for m in c.mitre_tech_ids})
 
@@ -166,13 +182,15 @@ def _update_advisories_metadata(
         UPDATE advisories
         SET cve_ids_mentioned   = PARSE_JSON(%s)::ARRAY,
             mitre_ids_mentioned = PARSE_JSON(%s)::ARRAY,
-            co_authors          = PARSE_JSON(%s)::ARRAY
+            co_authors          = PARSE_JSON(%s)::ARRAY,
+            document_type       = %s
         WHERE advisory_id = %s
         """,
         (
             json.dumps(all_cve),
             json.dumps(all_mitre),
             json.dumps(co_authors),
+            document_type,
             advisory_id,
         ),
     )
@@ -325,6 +343,48 @@ def _sha256(text: str) -> str:
 # Co-author extraction
 # ---------------------------------------------------------------------------
 
+def _count_authoring_agencies(main_soup) -> int:
+    """
+    Count distinct authoring agency acronyms in the opening text of the body.
+    Used as a fallback when co_authors extraction failed to pick up a joint CSA.
+    """
+    if main_soup is None:
+        return 0
+    text = main_soup.get_text(separator=" ", strip=True)[:4000]
+    return len(set(AUTHORING_AGENCY_RE.findall(text)))
+
+
+def _classify_document_type(
+    title: str,
+    advisory_type: str,
+    co_authors: list[str],
+    main_soup=None,
+) -> str:
+    """
+    Refine the coarse CISA advisory_type into a finer document_type.
+
+    Returns one of: MAR, ANALYSIS_REPORT, STOPRANSOMWARE, IR_LESSONS, JOINT_CSA, CSA.
+    If `main_soup` is provided, uses HTML body as a fallback signal for JOINT_CSA
+    when `co_authors` extraction came up empty.
+    """
+    t = title or ""
+
+    if advisory_type == "analysis_report":
+        return "MAR" if MAR_RE.search(t) else "ANALYSIS_REPORT"
+
+    # advisory_type == "cybersecurity_advisory" — disambiguate subtypes
+    if STOPRANSOMWARE_RE.search(t):
+        return "STOPRANSOMWARE"
+    if IR_LESSONS_RE.search(t):
+        return "IR_LESSONS"
+    if len(co_authors) >= 2:
+        return "JOINT_CSA"
+    # Fallback: scan body for distinct agency acronyms
+    if _count_authoring_agencies(main_soup) >= 2:
+        return "JOINT_CSA"
+    return "CSA"
+
+
 def _extract_co_authors(main_soup) -> list[str]:
     """Extract co-author organizations from HTML."""
     text = main_soup.get_text(separator="\n")
@@ -403,7 +463,7 @@ def parse_advisories(limit: int = None) -> int:
     logger.info(f"Found {len(rows)} unprocessed advisories")
     processed = 0
 
-    for i, (advisory_id, s3_raw_path) in enumerate(rows, 1):
+    for i, (advisory_id, s3_raw_path, title, advisory_type) in enumerate(rows, 1):
         logger.info(f"[{i}/{len(rows)}] Processing {advisory_id}")
 
         html = _download_html(s3_raw_path)
@@ -419,17 +479,18 @@ def parse_advisories(limit: int = None) -> int:
             continue
 
         co_authors = _extract_co_authors(main_soup)
+        document_type = _classify_document_type(title, advisory_type, co_authors, main_soup=main_soup)
 
         try:
             _insert_chunks(conn, chunks)
-            _update_advisories_metadata(conn, advisory_id, chunks, co_authors)
+            _update_advisories_metadata(conn, advisory_id, chunks, co_authors, document_type)
         except Exception as e:
             logger.warning(f"DB error on {advisory_id}, reconnecting: {e}")
             conn = _get_snowflake_conn()
             _insert_chunks(conn, chunks)
-            _update_advisories_metadata(conn, advisory_id, chunks, co_authors)
+            _update_advisories_metadata(conn, advisory_id, chunks, co_authors, document_type)
 
-        logger.info(f"  → {len(chunks)} chunks, co_authors={co_authors}")
+        logger.info(f"  → {len(chunks)} chunks, document_type={document_type}, co_authors={co_authors}")
         processed += 1
 
     conn.close()

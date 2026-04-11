@@ -67,7 +67,11 @@ MITRE_RE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
 # Document-type classification patterns
 STOPRANSOMWARE_RE = re.compile(r"#?\s*stopransomware", re.IGNORECASE)
 IR_LESSONS_RE = re.compile(
-    r"lessons learned|incident response engagement|ir engagement",
+    r"lessons learned"
+    r"|incident response engagement|ir engagement"
+    r"|red team(?:['\u2019]s)?\s+(assessment|operations|shares|engagement)"
+    r"|risk and vulnerability assessment"
+    r"|enhancing cyber resilience",
     re.IGNORECASE,
 )
 MAR_RE = re.compile(r"\bMAR[-\u2010-\u2015\s]?\d|malware analysis report", re.IGNORECASE)

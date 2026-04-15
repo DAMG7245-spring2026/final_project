@@ -4,7 +4,7 @@ from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.models import HealthResponse
-from app.services import get_snowflake_service, get_redis_cache, get_s3_storage
+from app.services import get_snowflake_service, get_redis_cache, get_s3_storage, get_neo4j_service
 
 router = APIRouter(tags=["Health"])
 
@@ -47,7 +47,15 @@ async def health_check():
         dependencies["s3"] = "healthy" if s3_healthy else f"unhealthy: {s3_error}"
     except Exception as e:
         dependencies["s3"] = f"unhealthy: {str(e)}"
-    
+
+    # Check Neo4j
+    try:
+        neo4j = get_neo4j_service()
+        neo4j_healthy, neo4j_error = await neo4j.health_check()
+        dependencies["neo4j"] = "healthy" if neo4j_healthy else f"unhealthy: {neo4j_error}"
+    except Exception as e:
+        dependencies["neo4j"] = f"unhealthy: {str(e)}"
+
     # Determine overall status
     all_healthy = all(v == "healthy" for v in dependencies.values())
     overall_status = "healthy" if all_healthy else "degraded"

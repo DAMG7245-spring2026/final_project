@@ -25,6 +25,10 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - S3_BUCKET=${S3_BUCKET}
+      # Neo4j Configuration
+      - NEO4J_URI=${NEO4J_URI}
+      - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
       # Application Configuration
       - DEBUG=${DEBUG:-false}
     depends_on:

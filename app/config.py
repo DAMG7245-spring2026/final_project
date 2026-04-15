@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     s3_bucket: str = ""
     
+    # Neo4j
+    neo4j_uri: str = ""
+    neo4j_username: str = "neo4j"
+    neo4j_password: str = ""
+
     # Cache TTLs (seconds)
     cache_ttl_company: int = 300  # 5 minutes
     cache_ttl_industry: int = 3600  # 1 hour

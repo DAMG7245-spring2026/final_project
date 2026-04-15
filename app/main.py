@@ -5,7 +5,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config import get_settings
-from app.routers import health_router
+from app.routers import health_router, hybrid_search_router, vector_search_router
+from app.services.bm25_index import load_or_build_bm25_index
 
 # Configure logging
 logging.basicConfig(
@@ -22,6 +23,13 @@ async def lifespan(app: FastAPI):
     logger.info("Starting PE Org-AI-R Platform...")
     settings = get_settings()
     logger.info(f"Environment: {'DEBUG' if settings.debug else 'PRODUCTION'}")
+
+    try:
+        index = load_or_build_bm25_index()
+        logger.info(f"BM25 index ready: {index.num_docs} docs")
+    except Exception as e:
+        logger.error(f"Failed to initialize BM25 index: {e}", exc_info=True)
+
     yield
     # Shutdown
     logger.info("Shutting down PE Org-AI-R Platform...")
@@ -68,6 +76,8 @@ def create_app() -> FastAPI:
     
     # Include routers
     app.include_router(health_router)
+    app.include_router(vector_search_router)
+    app.include_router(hybrid_search_router)
     
     # Global exception handler
     @app.exception_handler(Exception)

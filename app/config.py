@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     s3_bucket: str = ""
 
+    # OpenAI
+    openai_api_key: str = ""
+
     # Neo4j
     neo4j_uri: str = ""
     neo4j_username: str = "neo4j"

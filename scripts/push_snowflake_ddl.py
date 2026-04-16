@@ -16,6 +16,7 @@ SQL_FILES = [
     SQL_DIR / "01_schemas.sql",
     SQL_DIR / "02_curated_core.sql",
     SQL_DIR / "03_monitor.sql",
+    SQL_DIR / "04_demonstration_pool.sql",
 ]
 
 

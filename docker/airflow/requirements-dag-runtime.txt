@@ -1,0 +1,8 @@
+# Extra Python deps for DAG tasks that import app/ + ingestion/ (NVD pipeline, Snowflake).
+# Installed into the official Airflow image; versions aligned with pyproject.toml [tool.poetry.dependencies].
+snowflake-connector-python>=3.6.0,<4.0.0
+pydantic>=2.5.3,<3.0.0
+pydantic-settings>=2.1.0,<3.0.0
+httpx>=0.26.0,<0.28.0
+python-dotenv>=1.0.0,<2.0.0
+boto3>=1.34.0,<2.0.0

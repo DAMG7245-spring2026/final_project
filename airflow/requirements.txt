@@ -1,0 +1,5 @@
+# Airflow environment (Python 3.11). Install separately from app Poetry venv, e.g.:
+#   python3.11 -m venv .venv-airflow && source .venv-airflow/bin/activate
+#   pip install -r airflow/requirements.txt
+apache-airflow>=2.8.0,<3.0.0
+python-dotenv>=1.0.0

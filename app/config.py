@@ -1,6 +1,7 @@
 """Configuration management using Pydantic Settings."""
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +51,23 @@ class Settings(BaseSettings):
     neo4j_uri: str = ""
     neo4j_username: str = "neo4j"
     neo4j_password: str = ""
+    # When empty, drivers use the server home / default database (required on some Aura tiers).
+    neo4j_database: str = ""
+
+    @field_validator(
+        "neo4j_uri",
+        "neo4j_username",
+        "neo4j_password",
+        "neo4j_database",
+        mode="before",
+    )
+    @classmethod
+    def _strip_neo4j_whitespace(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
     # Cache TTLs (seconds)
     cache_ttl_company: int = 300  # 5 minutes

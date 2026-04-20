@@ -98,7 +98,7 @@ def hybrid_search(
     top_k: int = 10,
     top_n: int = 50,
     k_rrf: int = 60,
-    alpha: float = 0.2,
+    alpha: float = 0.4,
     document_types: Optional[list[str]] = None,
     section_names: Optional[list[str]] = None,
     cve_ids: Optional[list[str]] = None,
@@ -196,3 +196,29 @@ def hybrid_search(
         if len(results) >= top_k:
             break
     return results
+
+
+def hybrid_search_simple(
+    query: str,
+    top_k: int = 10,
+    top_n: int = 50,
+    k_rrf: int = 60,
+    alpha: float = 0.4,
+    min_vector_score: Optional[float] = None,
+    query_embedding: Optional[list[float]] = None,
+) -> list[dict[str, Any]]:
+    """Unfiltered hybrid search — same RRF fusion as `hybrid_search` but
+    without metadata filters (document_types / section_names / *_ids).
+
+    Alpha default (0.4) is the best-MRR setting from the vectordb_eval sweep
+    when no doctype oracle is available.
+    """
+    return hybrid_search(
+        query=query,
+        top_k=top_k,
+        top_n=top_n,
+        k_rrf=k_rrf,
+        alpha=alpha,
+        min_vector_score=min_vector_score,
+        query_embedding=query_embedding,
+    )

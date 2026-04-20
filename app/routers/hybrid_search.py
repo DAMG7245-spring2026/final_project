@@ -21,12 +21,12 @@ class HybridSearchRequest(BaseModel):
     )
     k_rrf: int = Field(60, ge=1, le=1000, description="RRF constant (paper: 60)")
     alpha: float = Field(
-        0.2,
+        0.4,
         ge=0.0,
         le=1.0,
         description="Vector weight in RRF; (1 - alpha) goes to BM25. "
                     "1.0 = vector only, 0.0 = BM25 only. "
-                    "Empirical sweet spot on vectordb_eval: 0.2.",
+                    "Best-MRR alpha on vectordb_eval (no doctype filter): 0.4.",
     )
     document_types: Optional[list[str]] = Field(
         None,
@@ -90,7 +90,7 @@ def _coerce_array(val: Any) -> Optional[list[str]]:
         "Runs BM25 (in-memory index built from chunk_text) and Cortex vector "
         "search in parallel, then fuses with Reciprocal Rank Fusion. "
         "Use `alpha` to weight the two branches (0.5 = balanced; "
-        "default 0.2 is the empirical sweet spot on our eval set)."
+        "default 0.4 is the best-MRR setting on our eval set without doctype filter)."
     ),
 )
 async def hybrid_search_endpoint(

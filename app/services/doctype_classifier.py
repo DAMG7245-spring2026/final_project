@@ -14,11 +14,9 @@ Used by:
 
 import json
 import logging
-import os
 from typing import Optional
 
-from openai import OpenAI
-
+from app.services.llm_router import LLMRouter, LLMTask, get_llm_router
 from app.services.search_tool_schema import (
     CLASSIFIER_SYSTEM_PROMPT,
     DOC_TYPE_ENUM,
@@ -30,13 +28,11 @@ logger = logging.getLogger(__name__)
 
 _DOC_TYPE_SET = set(DOC_TYPE_ENUM)
 
-DEFAULT_MODEL = "gpt-4o-mini"
-
 
 def classify_doctype(
     query: str,
-    client: Optional[OpenAI] = None,
-    model: str = DEFAULT_MODEL,
+    router: Optional[LLMRouter] = None,
+    model_override: Optional[str] = None,
 ) -> list[str]:
     """Ask an LLM how it would call `search_advisories` for this query.
 
@@ -49,11 +45,11 @@ def classify_doctype(
     hybrid_search). Unknown / invalid types are silently dropped so one
     hallucinated value doesn't collapse retrieval to zero hits.
     """
-    if client is None:
-        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    if router is None:
+        router = get_llm_router()
 
-    resp = client.chat.completions.create(
-        model=model,
+    record = router.complete(
+        task=LLMTask.DOCTYPE_CLASSIFICATION,
         messages=[
             {"role": "system", "content": CLASSIFIER_SYSTEM_PROMPT},
             {"role": "user", "content": query},
@@ -64,9 +60,11 @@ def classify_doctype(
             "function": {"name": SEARCH_TOOL_NAME},
         },
         temperature=0,
+        model_override=model_override,
+        extra_log={"stage": "doctype_classification"},
     )
 
-    msg = resp.choices[0].message
+    msg = record.response.choices[0].message
     tool_calls = msg.tool_calls or []
     if not tool_calls:
         logger.warning("[doctype_clf] no tool_call returned for query=%r", query)

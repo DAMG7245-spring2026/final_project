@@ -178,9 +178,23 @@ def attack_paths_cypher(
     mh, lim = _clamp_hops_limit(max_hops, limit)
     kind_l = kind.strip().lower()
     if kind_l == "cve":
-        start_match = "MATCH (start:CVE {id: $val})"
+        start_match = """
+        MATCH (start:CVE {id: $val})
+        WHERE coalesce(start.vuln_status, '') <> 'Deferred'
+        """
+        # published_date is stored as ISO string from sync (_iso), not a native date;
+        # use date() for compare. NULL vuln_status / published_date: treat as non-blocking.
+        path_where = """
+        WHERE NOT end:CVE
+          AND ALL(n IN nodes(p) WHERE
+              NOT n:CVE
+              OR (coalesce(n.vuln_status, '') <> 'Deferred'
+                  AND (n.published_date IS NULL
+                       OR date(n.published_date) >= date('2015-01-01'))))
+        """
     elif kind_l == "technique":
         start_match = "MATCH (start:Technique {id: $val})"
+        path_where = "WHERE NOT end:Technique"
     elif kind_l == "actor":
         start_match = """
         MATCH (start:Actor)
@@ -189,13 +203,14 @@ def attack_paths_cypher(
            OR coalesce(start.id, '') = $val
            OR coalesce(start.external_id, '') = $val
         """
+        path_where = "WHERE NOT end:Actor"
     else:
         raise ValueError(f"invalid attack path kind: {kind}")
 
     q = f"""
     {start_match}
-    MATCH p = (start)-[*1..{mh}]-(end)
-    WHERE end:Actor OR end:Technique OR end:CWE OR end:CVE
+    MATCH p = (start)-[*1..{mh}]->(end)
+    {path_where}
     WITH p LIMIT {lim}
     RETURN collect({{
       nodes: [n IN nodes(p) | {{labels: labels(n), properties: properties(n)}}],

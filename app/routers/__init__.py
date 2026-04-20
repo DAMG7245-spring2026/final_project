@@ -8,6 +8,7 @@ from .hybrid_search import router as hybrid_search_router
 from .query import router as query_router
 from .technique import router as technique_router
 from .vector_search import router as vector_search_router
+from .graph_query import router as graph_query_router
 
 __all__ = [
     "actor_router",
@@ -19,4 +20,5 @@ __all__ = [
     "query_router",
     "technique_router",
     "vector_search_router",
+    "graph_query_router",
 ]

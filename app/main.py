@@ -10,6 +10,7 @@ from app.routers import (
     brief_router,
     cve_router,
     graph_attack_path_router,
+    graph_query_router,
     health_router,
     hybrid_search_router,
     query_router,
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(brief_router)
     app.include_router(vector_search_router)
     app.include_router(hybrid_search_router)
+    app.include_router(graph_query_router)
     
     # Global exception handler
     @app.exception_handler(Exception)

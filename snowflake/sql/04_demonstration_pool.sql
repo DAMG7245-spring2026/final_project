@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS demonstration_pool (
     document_type   VARCHAR(50),
     report_text     TEXT,
     gold_triplets   VARIANT,
-    demo_embedding  VECTOR(FLOAT, 3072),
+    demo_embedding  VECTOR(FLOAT, 1024),
     created_at      TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );
 

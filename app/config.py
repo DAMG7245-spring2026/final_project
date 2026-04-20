@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     llm_model_cypher_generation: str = "gpt-4o"
     llm_model_answer_generation: str = "gpt-4o"
     llm_model_doctype_classification: str = "gpt-4o-mini"
+    llm_model_rag_routing: str = "gpt-4o-mini"
     llm_model_default: str = "gpt-4o-mini"
     # Daily USD budget. When exceeded, LLMRouter raises BudgetExceededError.
     llm_daily_budget_usd: float = 5.0

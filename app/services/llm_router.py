@@ -53,6 +53,7 @@ class LLMTask(str, Enum):
     CYPHER_GENERATION = "cypher_generation"
     ANSWER_GENERATION = "answer_generation"
     DOCTYPE_CLASSIFICATION = "doctype_classification"
+    RAG_ROUTING = "rag_routing"
     DEFAULT = "default"
 
 
@@ -108,6 +109,7 @@ class LLMRouter:
             LLMTask.CYPHER_GENERATION.value: s.llm_model_cypher_generation,
             LLMTask.ANSWER_GENERATION.value: s.llm_model_answer_generation,
             LLMTask.DOCTYPE_CLASSIFICATION.value: s.llm_model_doctype_classification,
+            LLMTask.RAG_ROUTING.value: s.llm_model_rag_routing,
             LLMTask.DEFAULT.value: s.llm_model_default,
         }
         self._redis = redis_client

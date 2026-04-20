@@ -5,7 +5,17 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config import get_settings
-from app.routers import health_router, hybrid_search_router, vector_search_router
+from app.routers import (
+    actor_router,
+    brief_router,
+    cve_router,
+    graph_attack_path_router,
+    health_router,
+    hybrid_search_router,
+    query_router,
+    technique_router,
+    vector_search_router,
+)
 from app.services.bm25_index import load_or_build_bm25_index
 
 # Configure logging
@@ -46,17 +56,11 @@ def create_app() -> FastAPI:
         
         AI-Readiness Assessment Platform for Private Equity
         
-        ### Features:
-        - Company management with industry classification
-        - Assessment lifecycle management
-        - Seven-dimension AI-readiness scoring
-        - Caching for optimized performance
-        
-        ### Assessment Types:
-        - **Screening**: Quick external assessment
-        - **Due Diligence**: Deep dive with internal access
-        - **Quarterly**: Regular portfolio monitoring
-        - **Exit Prep**: Pre-exit assessment
+        ### CTI knowledge graph (structured)
+        - **CVE**, **Actor**, **Technique** detail from Neo4j
+        - **Attack-path** traversal (`/graph/attack-path`)
+        - **Search**: hybrid BM25 + vector over advisory chunks (`/search/...`)
+        - **NL query** (`POST /query`) and **weekly brief** (`GET /brief/weekly`) are stubs until advisory data is in Neo4j
         """,
         version=settings.app_version,
         lifespan=lifespan,
@@ -76,6 +80,12 @@ def create_app() -> FastAPI:
     
     # Include routers
     app.include_router(health_router)
+    app.include_router(cve_router)
+    app.include_router(actor_router)
+    app.include_router(technique_router)
+    app.include_router(graph_attack_path_router)
+    app.include_router(query_router)
+    app.include_router(brief_router)
     app.include_router(vector_search_router)
     app.include_router(hybrid_search_router)
     

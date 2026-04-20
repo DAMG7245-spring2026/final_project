@@ -154,6 +154,44 @@ docker compose -f docker/docker-compose.yml --env-file .env up --build
 
 The API stack does not include Airflow; use [`docker/docker-compose.airflow.yml`](docker/docker-compose.airflow.yml) for the NVD three-stage DAGs (see **Airflow via Docker** under [NVD CVE ingestion](#nvd-cve-ingestion-phase-2)).
 
+## CTI knowledge graph API (FastAPI)
+
+Structured routes read from **Neo4j** (CVE/CWE sync, ATT&CK techniques, chunk-derived `REFERENCES_TECHNIQUE` edges, and native ATT&CK nodes/relationships where loaded). Hybrid and vector search stay under **`/search/...`** (Snowflake `advisory_chunks`).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Snowflake, Redis, S3, Neo4j connectivity (200 only if all healthy). |
+| GET | `/cve/{cve_id}` | `:CVE` properties plus `HAS_WEAKNESS`→CWE and `REFERENCES_TECHNIQUE`→Technique rows. |
+| GET | `/actor/{actor_id}` | `:Actor` matched by `name`, `actor_id`, `id`, or `external_id`, plus bounded neighborhood. |
+| GET | `/technique/{technique_id}` | `:Technique` by MITRE id (e.g. `T1059`), plus bounded neighborhood. |
+| GET | `/graph/attack-path` | Query params: **exactly one** of `from_cve`, `from_actor`, `from_technique`; optional `max_hops` (1–6), `limit` (1–25). |
+| POST | `/query` | **Stub** — returns `{ "status": "pending", "message": "..." }` until unstructured advisory data is in Neo4j. |
+| GET | `/brief/weekly` | **Stub** — same pending payload until advisory graph narrative is wired. |
+
+Examples:
+
+```bash
+curl -s "http://localhost:8000/cve/CVE-2024-21413"
+curl -s "http://localhost:8000/technique/T1059"
+curl -s "http://localhost:8000/graph/attack-path?from_cve=CVE-2024-21413&max_hops=3&limit=5"
+curl -s -X POST "http://localhost:8000/query" -H "Content-Type: application/json" -d '{"query":"test"}'
+curl -s "http://localhost:8000/brief/weekly"
+```
+
+## Streamlit CTI console
+
+Multipage UI under [`streamlit_cti/`](streamlit_cti/) that calls the same FastAPI endpoints (sidebar **API base URL**; optional **`CTI_API_BASE`** in `.env` for the default).
+
+**Prerequisites:** API running (`poetry run uvicorn app.main:app --reload --port 8000`). Hybrid search needs the API to have finished BM25 startup; graph pages need Neo4j healthy.
+
+```bash
+poetry run streamlit run streamlit_cti/Home.py --server.port 8501
+```
+
+Open `http://localhost:8501` and use the sidebar pages (Health, CVE, Actor, …). On **Home**, use **Ping API** to confirm the UI reaches the backend.
+
+**Docker (API + Streamlit together):** from `docker/`, `docker compose up --build` starts the API on port 8000 and **cti-ui** (Streamlit) on **8501** with `CTI_API_BASE=http://api:8000` so the console talks to the API over the Compose network.
+
 ## Health Check
 
 ```bash

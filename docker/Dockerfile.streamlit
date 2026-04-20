@@ -1,0 +1,23 @@
+# Streamlit CTI console — calls FastAPI (set CTI_API_BASE, e.g. http://api:8000 in Compose)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV POETRY_HOME="/opt/poetry"
+ENV PATH="$POETRY_HOME/bin:$PATH"
+RUN curl -sSL https://install.python-poetry.org | python3 - \
+    && poetry config virtualenvs.create false
+
+COPY pyproject.toml poetry.lock* ./
+RUN poetry install --only main --no-interaction --no-ansi --no-root
+
+COPY streamlit_cti/ ./streamlit_cti/
+
+ENV CTI_API_BASE=http://api:8000
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "streamlit_cti/Home.py", "--server.address=0.0.0.0", "--server.port=8501", "--browser.gatherUsageStats=false"]

@@ -13,13 +13,18 @@ router = APIRouter(tags=["Health"])
     "/health",
     response_model=HealthResponse,
     summary="Health Check",
-    description="Check health status of the API and all dependencies."
+    description=(
+        "Checks Snowflake, Redis, S3, and Neo4j connectivity. "
+        "CTI structured graph endpoints (CVE, actor, technique, attack-path) require "
+        "Neo4j; search endpoints additionally use Snowflake and Redis/BM25. "
+        "Returns 200 only if every dependency reports healthy."
+    ),
 )
 async def health_check():
     """
     Check health of all dependencies.
-    
-    Returns 200 if all healthy, 503 if any unhealthy.
+
+    Returns 200 if all healthy, 503 if any unhealthy (overall status `degraded`).
     """
     settings = get_settings()
     dependencies: dict[str, str] = {}

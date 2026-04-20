@@ -44,6 +44,22 @@ services:
       retries: 3
       start_period: 10s
 
+  # Streamlit CTI console → same-network API at http://api:8000
+  cti-ui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.streamlit
+    ports:
+      - "8501:8501"
+    environment:
+      - CTI_API_BASE=http://api:8000
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - pe-org-air-network
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     ports:

@@ -1,10 +1,10 @@
 """FastAPI application entry point."""
-import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config import get_settings
+from app.logging_config import configure_logging, get_logger
 from app.routers import (
     actor_router,
     brief_router,
@@ -19,31 +19,32 @@ from app.routers import (
 )
 from app.services.bm25_index import load_or_build_bm25_index
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Configure structured logging (structlog + stdlib interop) once at import time.
+# Importing app.main from uvicorn, tests, or scripts all go through this path,
+# so third-party libs that log via stdlib also land in the same pipeline.
+configure_logging()
+log = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown."""
-    # Startup
-    logger.info("Starting PE Org-AI-R Platform...")
     settings = get_settings()
-    logger.info(f"Environment: {'DEBUG' if settings.debug else 'PRODUCTION'}")
+    log.info(
+        "app_startup",
+        app_name=settings.app_name,
+        version=settings.app_version,
+        debug=settings.debug,
+    )
 
     try:
         index = load_or_build_bm25_index()
-        logger.info(f"BM25 index ready: {index.num_docs} docs")
+        log.info("bm25_index_ready", num_docs=index.num_docs)
     except Exception as e:
-        logger.error(f"Failed to initialize BM25 index: {e}", exc_info=True)
+        log.exception("bm25_index_init_failed", error=str(e))
 
     yield
-    # Shutdown
-    logger.info("Shutting down PE Org-AI-R Platform...")
+    log.info("app_shutdown")
 
 
 def create_app() -> FastAPI:
@@ -94,7 +95,12 @@ def create_app() -> FastAPI:
     # Global exception handler
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
-        logger.error(f"Unhandled exception: {exc}", exc_info=True)
+        log.exception(
+            "unhandled_exception",
+            path=request.url.path,
+            method=request.method,
+            error=str(exc),
+        )
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal server error", "error": str(exc)}

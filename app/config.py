@@ -47,6 +47,27 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: str = ""
 
+    # LiteLLM router
+    # Per-task model mapping. Values must be LiteLLM-compatible model IDs
+    # (e.g. "gpt-4o", "gpt-4o-mini", "anthropic/claude-sonnet-4-6").
+    llm_model_cypher_generation: str = "gpt-4o"
+    llm_model_answer_generation: str = "gpt-4o"
+    llm_model_doctype_classification: str = "gpt-4o-mini"
+    llm_model_default: str = "gpt-4o-mini"
+    # Daily USD budget. When exceeded, LLMRouter raises BudgetExceededError.
+    llm_daily_budget_usd: float = 5.0
+    # When false, budget is only tracked + logged (soft mode), not enforced.
+    llm_budget_enforce: bool = True
+
+    # Structured logging (structlog) — applies to the whole app, not just LLM calls.
+    # "json"    = JSONRenderer (prod/containers, machine-parseable)
+    # "console" = ConsoleRenderer (dev, colorized key=value)
+    # "auto"    = console when debug=True else json
+    log_format: str = "auto"
+    log_level: str = "INFO"
+    # Optional sink for every structured log line. Empty = stderr only.
+    log_file: str = ""
+
     # Neo4j
     neo4j_uri: str = ""
     neo4j_username: str = "neo4j"

@@ -10,10 +10,14 @@ Fuses them with Reciprocal Rank Fusion:
 
 where weights come from `alpha` (alpha -> vector, 1 - alpha -> bm25).
 
-Metadata filters (section_names / cve_ids / cwe_ids / mitre_tech_ids /
-advisory_ids) are applied to both the vector branch and (via an enrichment
-query) the BM25 branch, so the filter semantics match `vector_search`.
+Metadata filters (document_types / section_names / cve_ids / cwe_ids /
+mitre_tech_ids / advisory_ids) are applied to both the vector branch and
+(via an enrichment query) the BM25 branch, so the filter semantics match
+`vector_search`. Specific entity names (CVE/CWE/MITRE/advisory IDs) are
+left to BM25 text matching unless a caller passes them explicitly —
+document_type is the primary routing signal for AI-agent use via MCP.
 """
+
 from typing import Any, Optional
 
 from app.services.bm25_index import get_bm25_index
@@ -23,6 +27,7 @@ from app.services.vector_search import search_advisory_chunks
 
 def _fetch_chunks_by_ids(
     chunk_ids: list[str],
+    document_types: Optional[list[str]] = None,
     section_names: Optional[list[str]] = None,
     cve_ids: Optional[list[str]] = None,
     cwe_ids: Optional[list[str]] = None,
@@ -43,6 +48,14 @@ def _fetch_chunks_by_ids(
     placeholders = ",".join(["%s"] * len(chunk_ids))
     where.append(f"chunk_id IN ({placeholders})")
     params.extend(chunk_ids)
+
+    if document_types:
+        ph = ",".join(["%s"] * len(document_types))
+        where.append(
+            f"advisory_id IN (SELECT advisory_id FROM advisories "
+            f"WHERE document_type IN ({ph}))"
+        )
+        params.extend(document_types)
 
     if section_names:
         ph = ",".join(["%s"] * len(section_names))
@@ -85,13 +98,15 @@ def hybrid_search(
     top_k: int = 10,
     top_n: int = 50,
     k_rrf: int = 60,
-    alpha: float = 0.5,
+    alpha: float = 0.2,
+    document_types: Optional[list[str]] = None,
     section_names: Optional[list[str]] = None,
     cve_ids: Optional[list[str]] = None,
     cwe_ids: Optional[list[str]] = None,
     mitre_tech_ids: Optional[list[str]] = None,
     advisory_ids: Optional[list[str]] = None,
     min_vector_score: Optional[float] = None,
+    query_embedding: Optional[list[float]] = None,
 ) -> list[dict[str, Any]]:
     """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 
@@ -102,6 +117,9 @@ def hybrid_search(
         k_rrf: RRF constant (paper default 60)
         alpha: weight on vector branch; (1 - alpha) goes to BM25.
                alpha=1.0 -> vector only, alpha=0.0 -> BM25 only.
+        document_types: primary routing filter (MAR / ANALYSIS_REPORT /
+            JOINT_CSA / STOPRANSOMWARE / IR_LESSONS / CSA). Intended for
+            an AI agent to narrow search to the right advisory category.
         *_ids / section_names / min_vector_score: same semantics as vector_search
     """
     alpha = max(0.0, min(1.0, alpha))
@@ -111,20 +129,22 @@ def hybrid_search(
     bm25_rank: dict[str, int] = {h.chunk_id: h.rank for h in bm25_hits}
     bm25_score: dict[str, float] = {h.chunk_id: h.score for h in bm25_hits}
 
-    # 2. Vector branch (reuses existing service + filters)
+    # 2. Vector branch (reuses existing service + filters).
+    # `query_embedding` short-circuits the Cortex round-trip; useful for
+    # eval loops that run the same query under many configs.
     vec_rows = search_advisory_chunks(
         query=query,
         top_k=top_n,
+        document_types=document_types,
         section_names=section_names,
         cve_ids=cve_ids,
         cwe_ids=cwe_ids,
         mitre_tech_ids=mitre_tech_ids,
         advisory_ids=advisory_ids,
         min_score=min_vector_score,
+        query_embedding=query_embedding,
     )
-    vec_rank: dict[str, int] = {
-        r["chunk_id"]: i + 1 for i, r in enumerate(vec_rows)
-    }
+    vec_rank: dict[str, int] = {r["chunk_id"]: i + 1 for i, r in enumerate(vec_rows)}
     vec_score: dict[str, float] = {
         r["chunk_id"]: float(r["score"]) if r.get("score") is not None else 0.0
         for r in vec_rows
@@ -150,6 +170,7 @@ def hybrid_search(
     if missing:
         enriched = _fetch_chunks_by_ids(
             missing,
+            document_types=document_types,
             section_names=section_names,
             cve_ids=cve_ids,
             cwe_ids=cwe_ids,

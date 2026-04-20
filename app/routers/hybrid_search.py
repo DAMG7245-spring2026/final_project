@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.services.hybrid_search import hybrid_search
+from app.services.search_tool_schema import DOC_TYPE_DESCRIPTION, DOC_TYPE_ENUM
 
 router = APIRouter(prefix="/search", tags=["Search"])
 
@@ -20,11 +21,17 @@ class HybridSearchRequest(BaseModel):
     )
     k_rrf: int = Field(60, ge=1, le=1000, description="RRF constant (paper: 60)")
     alpha: float = Field(
-        0.5,
+        0.2,
         ge=0.0,
         le=1.0,
         description="Vector weight in RRF; (1 - alpha) goes to BM25. "
-                    "1.0 = vector only, 0.0 = BM25 only.",
+                    "1.0 = vector only, 0.0 = BM25 only. "
+                    "Empirical sweet spot on vectordb_eval: 0.2.",
+    )
+    document_types: Optional[list[str]] = Field(
+        None,
+        description=DOC_TYPE_DESCRIPTION,
+        json_schema_extra={"enum_values": DOC_TYPE_ENUM},
     )
     section_names: Optional[list[str]] = None
     cve_ids: Optional[list[str]] = None
@@ -82,7 +89,8 @@ def _coerce_array(val: Any) -> Optional[list[str]]:
     description=(
         "Runs BM25 (in-memory index built from chunk_text) and Cortex vector "
         "search in parallel, then fuses with Reciprocal Rank Fusion. "
-        "Use `alpha` to weight the two branches (0.5 = balanced)."
+        "Use `alpha` to weight the two branches (0.5 = balanced; "
+        "default 0.2 is the empirical sweet spot on our eval set)."
     ),
 )
 async def hybrid_search_endpoint(
@@ -95,6 +103,7 @@ async def hybrid_search_endpoint(
             top_n=req.top_n,
             k_rrf=req.k_rrf,
             alpha=req.alpha,
+            document_types=req.document_types,
             section_names=req.section_names,
             cve_ids=req.cve_ids,
             cwe_ids=req.cwe_ids,

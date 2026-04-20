@@ -28,10 +28,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_INDEX_PATH = "data/bm25_index.pkl"
 
 # Structured security IDs we want preserved as atomic tokens so exact-match
-# queries like "CVE-2024-1234" stay intact through tokenization.
-_CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
+# queries like "CVE-2024-1234" or "aa23-215a" stay intact through
+# tokenization. Without this, `_WORD_RE` splits on `-` / `.` and collapses
+# high-IDF identifiers into many low-IDF fragments (e.g. "aa23-215a" ->
+# ["aa23","215a"]), which kills BM25 recall on entity-heavy queries.
+_CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
 _CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
-_MITRE_RE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+_MITRE_RE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
+_ADVISORY_RE = re.compile(
+    r"\b(?:"
+    r"aa\d{2}-\d{3,}[a-z]?"              # joint CSA: aa23-215a
+    r"|ar\d{2}-\d{3,}[a-z]?"             # analysis report: ar20-198b
+    r"|mar-\d+(?:-\d+)?(?:\.v\d+)?"      # malware analysis: mar-10296782-2.v1
+    r")\b",
+    re.IGNORECASE,
+)
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _WORD_RE = re.compile(r"[a-zA-Z0-9]+")
 
 
@@ -56,10 +68,14 @@ def tokenize(text: str) -> list[str]:
         [m.lower() for m in _CVE_RE.findall(text)]
         + [m.lower() for m in _CWE_RE.findall(text)]
         + [m.lower() for m in _MITRE_RE.findall(text)]
+        + [m.lower() for m in _ADVISORY_RE.findall(text)]
+        + [m.lower() for m in _IPV4_RE.findall(text)]
     )
     clean = _CVE_RE.sub(" ", text)
     clean = _CWE_RE.sub(" ", clean)
     clean = _MITRE_RE.sub(" ", clean)
+    clean = _ADVISORY_RE.sub(" ", clean)
+    clean = _IPV4_RE.sub(" ", clean)
     words = [
         w.lower()
         for w in _WORD_RE.findall(clean)

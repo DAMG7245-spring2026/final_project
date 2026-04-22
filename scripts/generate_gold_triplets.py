@@ -19,12 +19,13 @@ import json
 import time
 
 from dotenv import load_dotenv
-
-load_dotenv()
+from openai import OpenAI
 
 import snowflake.connector
-from openai import OpenAI
 from app.config import get_settings
+from app.services.llm_usage_log import log_llm_usage
+
+load_dotenv()
 
 RELATION_WHITELIST = [
     "uses",
@@ -123,40 +124,103 @@ def _parse_response(raw: str) -> list[dict]:
     return json.loads(text)
 
 
-def _call_llm(client: OpenAI, prompt: str, model: str, max_tokens: int = 4000):
+def _call_llm(
+    client: OpenAI,
+    prompt: str,
+    model: str,
+    *,
+    operation: str,
+    max_tokens: int = 4000,
+    metadata: dict | None = None,
+):
     """Call OpenAI and return parsed JSON + usage."""
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-        max_tokens=max_tokens,
-    )
-    parsed = _parse_response(response.choices[0].message.content)
-    return parsed, response.usage
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=max_tokens,
+        )
+        parsed = _parse_response(response.choices[0].message.content)
+        log_llm_usage(
+            source="script",
+            operation=operation,
+            provider="openai",
+            model=model,
+            usage=response.usage,
+            success=True,
+            metadata=metadata,
+        )
+        return parsed, response.usage
+    except Exception as exc:
+        log_llm_usage(
+            source="script",
+            operation=operation,
+            provider="openai",
+            model=model,
+            success=False,
+            error_message=str(exc),
+            metadata=metadata,
+        )
+        raise
 
 
-def extract_triplets(client: OpenAI, report_text: str, model: str):
+def extract_triplets(
+    client: OpenAI,
+    report_text: str,
+    model: str,
+    metadata: dict | None = None,
+):
     prompt = EXTRACTION_PROMPT.format(
         relations=json.dumps(RELATION_WHITELIST),
         report_text=report_text,
     )
-    return _call_llm(client, prompt, model)
+    return _call_llm(
+        client,
+        prompt,
+        model,
+        operation="generate_gold_triplets.extract",
+        metadata=metadata,
+    )
 
 
-def verify_round1(client: OpenAI, report_text: str, triplets: list[dict], model: str):
+def verify_round1(
+    client: OpenAI,
+    report_text: str,
+    triplets: list[dict],
+    model: str,
+    metadata: dict | None = None,
+):
     prompt = VERIFY_ROUND1_PROMPT.format(
         relations=json.dumps(RELATION_WHITELIST),
         report_text=report_text,
         triplets_json=json.dumps(triplets, indent=2),
     )
-    return _call_llm(client, prompt, model)
+    return _call_llm(
+        client,
+        prompt,
+        model,
+        operation="generate_gold_triplets.verify_round1",
+        metadata=metadata,
+    )
 
 
-def verify_round2(client: OpenAI, triplets: list[dict], model: str):
+def verify_round2(
+    client: OpenAI,
+    triplets: list[dict],
+    model: str,
+    metadata: dict | None = None,
+):
     prompt = VERIFY_ROUND2_PROMPT.format(
         triplets_json=json.dumps(triplets, indent=2),
     )
-    return _call_llm(client, prompt, model)
+    return _call_llm(
+        client,
+        prompt,
+        model,
+        operation="generate_gold_triplets.verify_round2",
+        metadata=metadata,
+    )
 
 
 def filter_valid(verified: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -204,7 +268,7 @@ def main():
     mode = "COMMIT" if args.commit else "DRY-RUN"
     print(f"[{mode}] Processing {len(rows)} demos with model={args.model}")
     print(f"Relation whitelist: {RELATION_WHITELIST}")
-    print(f"Verification: 3-pass (extract → verify R1 → verify R2)")
+    print("Verification: 3-pass (extract → verify R1 → verify R2)")
     print()
 
     total_input_tokens = 0
@@ -214,10 +278,20 @@ def main():
 
     for i, (demo_id, advisory_id, doc_type, report_text) in enumerate(rows, 1):
         print(f"[{i:3d}/{len(rows)}] {demo_id} ({advisory_id}, {doc_type})")
+        usage_meta = {
+            "demo_id": str(demo_id),
+            "advisory_id": str(advisory_id),
+            "document_type": str(doc_type) if doc_type is not None else None,
+        }
 
         # === Pass 1: Extract ===
         try:
-            raw_triplets, usage = extract_triplets(client, report_text, args.model)
+            raw_triplets, usage = extract_triplets(
+                client,
+                report_text,
+                args.model,
+                metadata=usage_meta,
+            )
             total_input_tokens += usage.prompt_tokens
             total_output_tokens += usage.completion_tokens
         except Exception as e:
@@ -237,7 +311,7 @@ def main():
             print(f"  Pass 1 Extract: {len(raw_triplets)} triplets")
 
         if not wl_triplets:
-            print(f"  No triplets to verify.\n")
+            print("  No triplets to verify.\n")
             if args.commit:
                 cur.execute(
                     "UPDATE demonstration_pool SET gold_triplets = PARSE_JSON(%s) WHERE demo_id = %s",
@@ -248,7 +322,13 @@ def main():
 
         # === Pass 2: Verify Round 1 (factual accuracy) ===
         try:
-            r1_result, usage = verify_round1(client, report_text, wl_triplets, args.model)
+            r1_result, usage = verify_round1(
+                client,
+                report_text,
+                wl_triplets,
+                args.model,
+                metadata=usage_meta,
+            )
             total_input_tokens += usage.prompt_tokens
             total_output_tokens += usage.completion_tokens
             r1_accepted, r1_rejected = filter_valid(r1_result)
@@ -263,7 +343,7 @@ def main():
             print(f"    ✗ R1: {t['subject']} --[{t['relation']}]--> {t['object']}  ({t.get('reason', '')})")
 
         if not r1_accepted:
-            print(f"  No triplets after R1.\n")
+            print("  No triplets after R1.\n")
             if args.commit:
                 cur.execute(
                     "UPDATE demonstration_pool SET gold_triplets = PARSE_JSON(%s) WHERE demo_id = %s",
@@ -274,7 +354,12 @@ def main():
 
         # === Pass 3: Verify Round 2 (strict quality audit) ===
         try:
-            r2_result, usage = verify_round2(client, r1_accepted, args.model)
+            r2_result, usage = verify_round2(
+                client,
+                r1_accepted,
+                args.model,
+                metadata=usage_meta,
+            )
             total_input_tokens += usage.prompt_tokens
             total_output_tokens += usage.completion_tokens
             r2_accepted, r2_rejected = filter_valid(r2_result)
@@ -308,14 +393,14 @@ def main():
 
     print("=" * 70)
     print(f"[{mode}] Done. {len(rows)} demos in {elapsed:.1f}s")
-    print(f"  Pipeline:  extracted → whitelist → R1 verify → R2 audit")
+    print("  Pipeline:  extracted → whitelist → R1 verify → R2 audit")
     print(f"  Counts:    {stats['extracted']} → {stats['after_whitelist']} → {stats['after_r1']} → {stats['after_r2']}")
     if stats["extracted"] > 0:
         print(f"  Final acceptance rate: {stats['after_r2'] / stats['extracted'] * 100:.1f}%")
     print(f"  Tokens — input: {total_input_tokens:,}  output: {total_output_tokens:,}")
     print(f"  Estimated cost: ${cost:.2f}")
     if not args.commit:
-        print(f"\n  [DRY-RUN] No DB writes. Rerun with --commit to save.")
+        print("\n  [DRY-RUN] No DB writes. Rerun with --commit to save.")
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ openai = "^2.32.0"
 litellm = "^1.52.0"
 structlog = "^24.4.0"
 streamlit = ">=1.40,<2"
+pyvis = ">=0.3,<1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.4"

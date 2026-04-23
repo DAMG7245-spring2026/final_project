@@ -21,6 +21,43 @@ API_BASE = os.getenv("CTI_API_BASE", "http://localhost:8000")
 st.header("Weekly CVE Threat-Intel Brief")
 st.caption(f"Backend: `{API_BASE}/weekly-brief/stream`")
 
+with st.expander("CVE retrieval strategy (Ranking)", expanded=False):
+    st.markdown(
+        """
+**Sources**: NVD (CVE master + CVSS) + CISA KEV (actively exploited list).
+Synced weekly by Airflow into Snowflake `cve_records`. Ranking is pure SQL —
+the LLM is not involved in ordering.
+
+**Window**: `window_start` / `window_end` in the sidebar (half-open interval).
+Defaults to the last 7 days.
+
+**Tier rules** (lower is more dangerous; anything above `max_tier` is excluded):
+
+| Tier | Condition | Meaning |
+|---|---|---|
+| 1 | `is_kev = TRUE` AND `kev_ransomware_use = 'Known'` | Actively used by ransomware |
+| 2 | `is_kev = TRUE` AND `kev_date_added` within window | Newly added to KEV this week |
+| 3 | `has_exploit_ref = TRUE` AND `cvss_score >= 9.0` | Critical CVE with public exploit |
+| 4 | `cvss_severity = 'CRITICAL'` AND `confidentiality_impact = 'HIGH'` | Worst-case severity |
+| 5 | Everything else (excluded by default via `max_tier=4`) | Long-tail noise |
+
+**Intra-tier ordering**: `tier ↑` → `kev_date_added ↓` (fresh KEVs bubble up) →
+`cvss_score ↓` → `exploitability_score ↓` → `impact_score ↓` →
+`last_modified ↓`.
+
+**Two independent slices**:
+- `top_cves` (Top-N limit): the N most dangerous CVEs this week.
+- `newly_added_kev` (separate SQL, so it isn't crowded out by the Tier 1 pool):
+  the M new KEV entries this week.
+
+The two sets can overlap; the orchestrator dedupes (first-seen-wins) before
+the RAG fan-out, and the synthesizer uses `overlap_ids` to avoid describing
+the same CVE twice in the markdown.
+
+Full design: `doc/WEEKLY_BRIEF_DESIGN.md`, section 5.
+        """
+    )
+
 with st.sidebar:
     st.subheader("Window")
     default_end = date.today()

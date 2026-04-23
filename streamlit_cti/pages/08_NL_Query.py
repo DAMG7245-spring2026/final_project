@@ -1,16 +1,31 @@
 import streamlit as st
-from lib.client import post_query, render_api_sidebar
+import requests
 
-st.set_page_config(page_title="CTI — NL Query (stub)", layout="wide")
+st.set_page_config(page_title="CTI — NL Query", layout="wide")
 
-base = render_api_sidebar()
-st.header("POST /query (stub)")
-st.info("Backend returns **pending** until unstructured advisory data is in Neo4j.")
-q = st.text_area("Question (reserved)", value="Which actors exploit CVE-2024-21413?", height=100)
+st.header("Natural Language Query")
+
+q = st.text_area("Question", value="Which malware targets healthcare organizations?", height=100)
+
 if st.button("Send", type="primary"):
-    code, data, err = post_query(base, q.strip())
-    st.caption(f"HTTP {code}")
-    if err and code not in (200,):
-        st.error(err)
-    if data is not None:
-        st.json(data)
+    with st.spinner("Querying..."):
+        try:
+            resp = requests.post(
+                "http://localhost:8000/query",
+                json={"question": q.strip()},
+                headers={"accept": "application/json", "Content-Type": "application/json"},
+                timeout=60,
+            )
+            st.caption(f"HTTP {resp.status_code}")
+            if resp.ok:
+                data = resp.json()
+                if "answer" in data:
+                    st.markdown(data["answer"])
+                else:
+                    st.json(data)
+            else:
+                st.error(resp.text)
+        except requests.exceptions.ConnectionError:
+            st.error("Cannot connect to backend at http://localhost:8000")
+        except Exception as e:
+            st.error(str(e))

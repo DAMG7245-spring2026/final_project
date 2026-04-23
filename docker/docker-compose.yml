@@ -1,5 +1,4 @@
 # docker-compose.yml for PE Org-AI-R Platform
-version: '3.8'
 
 services:
   api:
@@ -29,6 +28,21 @@ services:
       - NEO4J_URI=${NEO4J_URI}
       - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      # LLM Provider Keys (LiteLLM picks the right one based on llm_model_*).
+      # Bare-name form: forwards the host env var ONLY if it's actually set —
+      # avoids handing an empty string to pydantic-settings for typed fields.
+      - OPENAI_API_KEY
+      - ANTHROPIC_API_KEY
+      # LLM Router overrides (all optional; unset → defaults in app/config.py)
+      - LLM_MODEL_CYPHER_GENERATION
+      - LLM_MODEL_ANSWER_GENERATION
+      - LLM_MODEL_DOCTYPE_CLASSIFICATION
+      - LLM_MODEL_RAG_ROUTING
+      - LLM_MODEL_DEFAULT
+      - LLM_DAILY_BUDGET_USD
+      - LLM_BUDGET_ENFORCE
+      # NVD (used by ingestion scripts; harmless in the api container)
+      - NVD_API_KEY
       # Application Configuration
       - DEBUG=${DEBUG:-false}
     depends_on:

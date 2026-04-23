@@ -116,6 +116,20 @@ Cypher:
 Example 7 — unanswerable (out of schema):
 Q: What's the latest cybersecurity news today?
 → can_answer=false, cypher=null
+
+Example 8 — CVE exploitation UNION product targeting (the standard "weekly brief" pattern):
+Q: Which threat actors, malware families, and campaigns are known to exploit CVE-2021-44228, or to use or target Apache Log4j?
+Cypher:
+  MATCH (n)-[r:EXPLOITS]->(c:CVE)
+  WHERE c.id = 'CVE-2021-44228'
+    AND (n:Actor OR n:Malware)
+  RETURN labels(n)[0] AS type, n.name, 'EXPLOITS' AS rel, c.id AS target, r.advisory_id
+  UNION
+  MATCH (n)-[r:USES|TARGETS]->(p:Other)
+  WHERE toLower(p.name) CONTAINS toLower('Log4j')
+    AND (n:Actor OR n:Malware)
+  RETURN labels(n)[0] AS type, n.name, type(r) AS rel, p.name AS target, r.advisory_id
+  LIMIT 50
 """
 
 CYPHER_SYSTEM = f"""You are a Neo4j Cypher expert for a Cyber Threat Intelligence knowledge graph.
@@ -135,6 +149,10 @@ Rules:
 - ALWAYS name the relationship variable so r.advisory_id can be returned.
   CORRECT:   MATCH (a:Actor)-[r:USES]->(m:Malware) RETURN m.name, r.advisory_id
   INCORRECT: MATCH (a:Actor)-[:USES]->(m:Malware)  RETURN m.name, r.advisory_id
+- For questions asking which actors/malware exploit a CVE OR use/target a product, use UNION:
+  first branch: MATCH (n)-[r:EXPLOITS]->(c:CVE) WHERE c.id = '<exact-CVE-id>' AND (n:Actor OR n:Malware)
+  second branch: MATCH (n)-[r:USES|TARGETS]->(p:Other) WHERE toLower(p.name) CONTAINS toLower('<product keyword>') AND (n:Actor OR n:Malware)
+  Put LIMIT 50 after the final UNION branch (it applies to the combined result set).
 - If the question cannot be answered from the schema, set can_answer=false and cypher=null.
 
 Examples:

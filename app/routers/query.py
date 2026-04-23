@@ -8,9 +8,10 @@ uses to run the same question through each route head-to-head.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Iterator, Literal
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.services.rag_router import get_rag_router_service
@@ -48,6 +49,25 @@ class QueryResponse(BaseModel):
     graph_row_count: int | None = None
     graph_results: list[dict] | None = None
     chunks: list[dict] | None = None
+
+
+@router.post(
+    "/query/stream",
+    summary="Streaming NL query — answer tokens arrive as plain text chunks",
+)
+def nl_query_stream(req: QueryRequest) -> StreamingResponse:
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    svc = get_rag_router_service()
+
+    def generate() -> Iterator[str]:
+        yield from svc.answer_stream(
+            req.question,
+            force_route=req.force_route,
+            disable_fallback=req.disable_fallback,
+        )
+
+    return StreamingResponse(generate(), media_type="text/plain")
 
 
 @router.post(

@@ -410,6 +410,71 @@ Raw results ({len(results)} rows):
             }
 
 
+    def retrieve(self, question: str) -> dict[str, Any]:
+        """Run Cypher generation + execution + chunk fetching without generating an answer.
+
+        Returns: {cypher, results, advisory_chunks, row_count, error}
+        Used by the streaming endpoint so answer generation can be streamed separately.
+        """
+        request_id = uuid.uuid4().hex[:12]
+        with bound_contextvars(request_id=request_id, question_preview=question[:160]):
+            cypher: str | None = None
+            last_error: str | None = None
+            results: list[dict] | None = None
+
+            for attempt in range(MAX_CYPHER_ATTEMPTS):
+                prior = (
+                    {"cypher": cypher, "error": last_error}
+                    if last_error and cypher is not None
+                    else None
+                )
+                cypher, reasoning = self._generate_cypher(question, prior)
+
+                if cypher is None:
+                    msg = (
+                        f"This question cannot be answered from the knowledge graph schema. ({reasoning})"
+                        if attempt == 0
+                        else f"Could not produce valid Cypher after {attempt} retry(ies). Last error: {last_error}"
+                    )
+                    return {"cypher": None, "results": [], "advisory_chunks": [], "row_count": 0, "error": msg}
+
+                try:
+                    results = self._neo4j.execute_query(cypher)
+                    break
+                except Exception as e:
+                    last_error = str(e)
+
+            if results is None:
+                return {
+                    "cypher": cypher,
+                    "results": [],
+                    "advisory_chunks": [],
+                    "row_count": 0,
+                    "error": f"Cypher execution failed after {MAX_CYPHER_ATTEMPTS} attempts. Last error: {last_error}",
+                }
+
+            advisory_ids = list({
+                v for row in results
+                for k, v in row.items()
+                if "advisory_id" in k and isinstance(v, str)
+            })[:20]
+
+            advisory_chunks: list[dict[str, Any]] = []
+            if advisory_ids:
+                try:
+                    advisory_chunks = self._fetch_relevant_chunks(question, advisory_ids)
+                except Exception as e:
+                    log.warning("advisory_chunks_fetch_failed", error=str(e))
+
+            return {
+                "cypher": cypher,
+                "results": results[:50],
+                "advisory_chunks": advisory_chunks,
+                "row_count": len(results),
+                "error": None,
+            }
+
+
 _service: Text2CypherService | None = None
 
 

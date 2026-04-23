@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
 import structlog
 from pydantic import BaseModel, Field, ValidationError
@@ -351,6 +351,86 @@ class RAGRouterService:
         )
         content = record.response.choices[0].message.content or ""
         return content.strip()
+
+
+    def answer_stream(
+        self,
+        question: str,
+        force_route: Route | None = None,
+        disable_fallback: bool = False,
+    ) -> Iterator[str]:
+        """Like answer() but streams the final LLM response token-by-token.
+
+        Routing + retrieval run synchronously first; only the answer-generation
+        LLM call is streamed. Yields raw token strings.
+        """
+        route: Route
+        if force_route is not None:
+            route = force_route
+        else:
+            route, _ = choose_route(question)
+
+        # --- retrieval (same logic as _dispatch but without answer generation) ---
+        cypher: str | None = None
+        graph_results: list[dict[str, Any]] = []
+        chunks: list[dict[str, Any]] = []
+        retrieval_error: str | None = None
+
+        if route in ("graph", "both"):
+            graph_data = self._text2cypher.retrieve(question)
+            cypher = graph_data.get("cypher")
+            graph_results = graph_data.get("results") or []
+            retrieval_error = graph_data.get("error")
+
+            if not disable_fallback and route == "graph" and graph_data.get("row_count", 0) == 0:
+                # zero-row fallback: switch to text
+                route = "text"
+                chunks = self._hybrid_search_safe(question)
+            elif route == "both":
+                chunks = self._hybrid_search_safe(question)
+        else:
+            chunks = self._hybrid_search_safe(question)
+
+        if retrieval_error and not graph_results and not chunks:
+            yield retrieval_error
+            return
+
+        # --- build prompt (mirrors _generate_answer from both services) ---
+        sections: list[str] = [f"Question: {question}"]
+        if cypher:
+            sections.append(f"Cypher used:\n{cypher}")
+        if graph_results is not None:
+            sections.append(
+                f"Knowledge-graph rows ({len(graph_results)}):\n"
+                f"{json.dumps(graph_results[:50], indent=2, default=str)}"
+            )
+        if chunks:
+            excerpts: list[str] = []
+            for h in chunks:
+                aid = h.get("advisory_id", "unknown")
+                section = h.get("section_name") or ""
+                sub = h.get("sub_section") or ""
+                header_tail = (f" §{section}" + (f" / {sub}" if sub else "")) if section else ""
+                excerpts.append(f"[{aid}{header_tail}]\n{h.get('chunk_text', '')}")
+            sections.append(
+                "Relevant advisory passages (ranked by hybrid BM25+vector):\n"
+                + "\n\n---\n".join(excerpts)
+            )
+        elif chunks is not None:
+            sections.append("Relevant advisory passages: none found.")
+
+        user_content = "\n\n".join(sections)
+
+        yield from self._llm.stream_complete(
+            task=LLMTask.ANSWER_GENERATION,
+            messages=[
+                {"role": "system", "content": ANSWER_SYSTEM},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0,
+            max_tokens=1200,
+            extra_log={"stage": "answer_generation_stream"},
+        )
 
 
 _service: RAGRouterService | None = None

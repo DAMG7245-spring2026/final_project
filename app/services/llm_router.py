@@ -31,7 +31,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Iterator
 
 import litellm
 import redis
@@ -223,6 +223,78 @@ class LLMRouter:
             **(extra_log or {}),
         )
         return record
+
+    def stream_complete(
+        self,
+        *,
+        task: LLMTask | str,
+        messages: list[dict[str, Any]],
+        temperature: float = 0,
+        max_tokens: int | None = None,
+        model_override: str | None = None,
+        extra_log: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Iterator[str]:
+        """Streaming version of complete(). Yields token strings; logs usage after the stream ends."""
+        task_key = task.value if isinstance(task, LLMTask) else task
+        model = model_override or self.model_for(task_key)
+        request_id = uuid.uuid4().hex[:12]
+
+        self._assert_budget_available(task_key, model, request_id)
+
+        call_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if max_tokens is not None:
+            call_kwargs["max_tokens"] = max_tokens
+        call_kwargs.update(kwargs)
+
+        t0 = time.perf_counter()
+        try:
+            stream = litellm.completion(**call_kwargs)
+        except Exception:
+            log.exception("llm_stream_failed", task=task_key, model=model, request_id=request_id)
+            raise
+
+        prompt_tokens = 0
+        completion_tokens = 0
+        try:
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    yield delta
+                if hasattr(chunk, "usage") and chunk.usage:
+                    prompt_tokens = int(getattr(chunk.usage, "prompt_tokens", 0) or 0)
+                    completion_tokens = int(getattr(chunk.usage, "completion_tokens", 0) or 0)
+        finally:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            try:
+                prompt_cost, completion_cost_val = litellm.cost_per_token(
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+                cost_usd = prompt_cost + completion_cost_val
+            except Exception:
+                cost_usd = 0.0
+            daily_spend = self._increment_spend(cost_usd)
+            log.info(
+                "llm_stream_call",
+                task=task_key,
+                model=model,
+                request_id=request_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=round(cost_usd, 6),
+                daily_spend_usd=round(daily_spend, 6),
+                daily_budget_usd=self._settings.llm_daily_budget_usd,
+                latency_ms=latency_ms,
+                **(extra_log or {}),
+            )
 
     # ---------- budget ----------
 

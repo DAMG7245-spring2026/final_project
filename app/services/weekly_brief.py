@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
+from typing import AsyncIterator, Iterator
 
 import structlog
 from pydantic import BaseModel
@@ -431,6 +432,73 @@ def _synthesize_brief(
     )
 
 
+def _build_synthesis_messages(
+    summary: WeeklyDigestSummary,
+    top_cves: list[WeeklyCve],
+    newly_added_kev: list[WeeklyCve],
+    evidence: list[CveEvidence],
+) -> list[dict[str, str]]:
+    """Shared prompt builder used by both the sync and streaming synthesis paths."""
+    ev_by_cve = {e.cve.cve_id: e for e in evidence}
+    top_blocks = [
+        _format_cve_block(ev_by_cve[c.cve_id])
+        for c in top_cves
+        if c.cve_id in ev_by_cve
+    ]
+    newly_blocks = [
+        _format_cve_block(ev_by_cve[c.cve_id])
+        for c in newly_added_kev
+        if c.cve_id in ev_by_cve
+    ]
+    overlap_ids = {c.cve_id for c in top_cves} & {c.cve_id for c in newly_added_kev}
+
+    user_content = (
+        f"Window: {summary.window_start} to {summary.window_end} (half-open).\n"
+        f"Overlap between top-danger and newly-added-KEV sections: "
+        f"{sorted(overlap_ids) or 'none'}\n\n"
+        "## Summary counts\n"
+        f"- total_modified: {summary.total_modified}\n"
+        f"- newly_published: {summary.newly_published}\n"
+        f"- critical_count: {summary.critical_count}\n"
+        f"- kev_added_count: {summary.kev_added_count}\n"
+        f"- kev_ransomware_count: {summary.kev_ransomware_count}\n"
+        f"- has_exploit_ref_count: {summary.has_exploit_ref_count}\n\n"
+        "## Top CVEs (danger-ranked)\n\n"
+        + ("\n".join(top_blocks) or "(no rows)\n")
+        + "\n## Newly added KEV this week\n\n"
+        + ("\n".join(newly_blocks) or "(no rows)\n")
+    )
+    return [
+        {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def _stream_synthesize_brief(
+    summary: WeeklyDigestSummary,
+    top_cves: list[WeeklyCve],
+    newly_added_kev: list[WeeklyCve],
+    evidence: list[CveEvidence],
+) -> Iterator[str]:
+    """Token-streaming synthesis. Yields markdown deltas; cost is logged
+    by ``LLMRouter.stream_complete`` when the stream finishes."""
+    router = get_llm_router()
+    overlap_ids = {c.cve_id for c in top_cves} & {c.cve_id for c in newly_added_kev}
+    yield from router.stream_complete(
+        task=LLMTask.ANSWER_GENERATION,
+        messages=_build_synthesis_messages(summary, top_cves, newly_added_kev, evidence),
+        temperature=SYNTHESIS_TEMPERATURE,
+        max_tokens=SYNTHESIS_MAX_TOKENS,
+        extra_log={
+            "stage": "weekly_brief_synthesis_stream",
+            "n_top": len(top_cves),
+            "n_newly": len(newly_added_kev),
+            "n_evidence": len(evidence),
+            "n_overlap": len(overlap_ids),
+        },
+    )
+
+
 # ---- public API -----------------------------------------------------------
 
 
@@ -520,3 +588,83 @@ async def generate_weekly_brief(
         synthesis_completion_tokens=brief.synthesis_completion_tokens,
     )
     return brief
+
+
+# ---- streaming (SSE) ------------------------------------------------------
+
+
+async def stream_weekly_brief(
+    *,
+    window_start: date | None = None,
+    window_end: date | None = None,
+    limit: int = DEFAULT_TOP_N,
+    max_tier: int = DEFAULT_MAX_TIER,
+    newly_added_limit: int = DEFAULT_NEWLY_ADDED_KEV_N,
+    ingested_after: datetime | None = None,
+) -> AsyncIterator[tuple[str, str]]:
+    """Yield ``(event_name, json_payload)`` tuples for the SSE endpoint.
+
+    Event order:
+      * ``meta``     — window + digest headline counts (as soon as SQL completes)
+      * ``cves``     — top_cves, newly_added_kev, evidence (after RAG fan-out)
+      * ``markdown`` — one event per LLM token delta (during synthesis)
+      * ``done``     — generated_at + worker_count (final)
+
+    The router wraps each tuple into ``event:/data:`` SSE frames.
+    """
+    import json
+
+    # 1. Digest
+    digest = await asyncio.to_thread(
+        weekly_digest,
+        window_start=window_start,
+        window_end=window_end,
+        limit=limit,
+        max_tier=max_tier,
+        newly_added_limit=newly_added_limit,
+        ingested_after=ingested_after,
+    )
+    summary: WeeklyDigestSummary = digest["summary"]
+    top: list[WeeklyCve] = digest["top_cves"]
+    newly: list[WeeklyCve] = digest["newly_added_kev"]
+
+    yield ("meta", summary.model_dump_json())
+
+    # 2. Fan out RAG
+    evidence = await _gather_cve_evidence(top + newly)
+
+    cves_payload = {
+        "top_cves": [c.model_dump(mode="json") for c in top],
+        "newly_added_kev": [c.model_dump(mode="json") for c in newly],
+        "evidence": [e.model_dump(mode="json") for e in evidence],
+    }
+    yield ("cves", json.dumps(cves_payload))
+
+    # 3. Stream synthesis tokens. ``stream_complete`` is a sync generator —
+    # pull chunks on a thread so the event loop stays free.
+    gen = _stream_synthesize_brief(summary, top, newly, evidence)
+    total_chars = 0
+    while True:
+        delta = await asyncio.to_thread(next, gen, None)
+        if delta is None:
+            break
+        total_chars += len(delta)
+        yield ("markdown", json.dumps({"delta": delta}))
+
+    yield (
+        "done",
+        json.dumps(
+            {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "worker_count": len(evidence),
+                "markdown_chars": total_chars,
+            }
+        ),
+    )
+    log.info(
+        "weekly_brief_stream_done",
+        window_start=summary.window_start.isoformat(),
+        window_end=summary.window_end.isoformat(),
+        workers=len(evidence),
+        markdown_chars=total_chars,
+    )

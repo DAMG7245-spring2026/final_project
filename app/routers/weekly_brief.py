@@ -8,12 +8,18 @@ corpus, and stitches the result into a markdown brief. See
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
-from app.services.weekly_brief import WeeklyBrief, generate_weekly_brief
+from app.services.weekly_brief import (
+    WeeklyBrief,
+    generate_weekly_brief,
+    stream_weekly_brief,
+)
 from app.services.weekly_digest import (
     DEFAULT_MAX_TIER,
     DEFAULT_NEWLY_ADDED_KEV_N,
@@ -98,3 +104,52 @@ async def weekly_brief_endpoint(
         raise HTTPException(
             status_code=500, detail=f"weekly brief failed: {e}"
         ) from e
+
+
+@router.get(
+    "/stream",
+    summary="Stream the weekly CVE brief as SSE",
+    description=(
+        "Server-Sent Events version of `/weekly-brief`. Emits four event types "
+        "in order:\n\n"
+        "- `meta` — digest headline counts + window (as soon as SQL completes).\n"
+        "- `cves` — `top_cves`, `newly_added_kev`, and `evidence` (after the "
+        "RAG fan-out).\n"
+        "- `markdown` — one event per synthesis token, payload `{\"delta\": \"...\"}`.\n"
+        "- `done` — generated_at + worker_count + final markdown length."
+    ),
+)
+async def weekly_brief_stream_endpoint(
+    window_start: Optional[date] = Query(None),
+    window_end: Optional[date] = Query(None),
+    limit: int = Query(DEFAULT_TOP_N, ge=1, le=50),
+    max_tier: int = Query(DEFAULT_MAX_TIER, ge=1, le=5),
+    newly_added_limit: int = Query(DEFAULT_NEWLY_ADDED_KEV_N, ge=1, le=50),
+    ingested_after: Optional[datetime] = Query(None),
+) -> StreamingResponse:
+    async def sse() -> AsyncIterator[bytes]:
+        try:
+            async for event_name, payload in stream_weekly_brief(
+                window_start=window_start,
+                window_end=window_end,
+                limit=limit,
+                max_tier=max_tier,
+                newly_added_limit=newly_added_limit,
+                ingested_after=ingested_after,
+            ):
+                yield f"event: {event_name}\ndata: {payload}\n\n".encode("utf-8")
+        except ValueError as e:
+            err = json.dumps({"detail": str(e)})
+            yield f"event: error\ndata: {err}\n\n".encode("utf-8")
+        except Exception as e:  # pylint: disable=broad-except
+            err = json.dumps({"detail": f"weekly brief stream failed: {e}"})
+            yield f"event: error\ndata: {err}\n\n".encode("utf-8")
+
+    return StreamingResponse(
+        sse(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

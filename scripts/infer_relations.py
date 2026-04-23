@@ -27,6 +27,7 @@ from neo4j import GraphDatabase
 from openai import OpenAI
 
 from app.config import get_settings
+from app.token_logger import log_llm_call
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -193,7 +194,7 @@ def get_report_text(cur, advisory_id: str) -> str:
 # ── LLM inference ─────────────────────────────────────────────────────────────
 
 def infer_relation(client: OpenAI, entity_a: str, entity_b: str,
-                   report_text: str, model: str = "gpt-4o") -> dict | None:
+                   report_text: str, model: str = "gpt-4o") -> tuple[dict | None, object]:
     user_prompt = f"""Report content:
 {report_text[:12000]}
 
@@ -214,18 +215,18 @@ What is the relationship between Entity A and Entity B based on this report?"""
         )
         raw = response.choices[0].message.content.strip()
         if raw.lower() == "null" or raw == "":
-            return None
+            return None, response.usage
         parsed = json.loads(raw)
         if parsed.get("relation") not in RELATION_WHITELIST:
-            return None
-        return parsed
+            return None, response.usage
+        return parsed, response.usage
     except Exception as e:
         print(f"    !! LLM error: {e}")
-        return None
+        return None, None
 
 
 def validate_inference(client: OpenAI, subject: str, relation: str, obj: str,
-                       model: str = "gpt-4o-mini") -> bool:
+                       model: str = "gpt-4o-mini") -> tuple[bool, object]:
     user_prompt = f'Subject: "{subject}"\nRelation: "{relation}"\nObject: "{obj}"'
     try:
         response = client.chat.completions.create(
@@ -239,16 +240,16 @@ def validate_inference(client: OpenAI, subject: str, relation: str, obj: str,
         )
         raw = response.choices[0].message.content.strip()
         parsed = json.loads(raw)
-        return bool(parsed.get("valid", False))
+        return bool(parsed.get("valid", False)), response.usage
     except Exception as e:
         print(f"    !! Validate error: {e}")
-        return False
+        return False, None
 
 
 # ── Main logic per advisory ───────────────────────────────────────────────────
 
 def process_advisory(advisory_id: str, session, cur, client: OpenAI,
-                     commit: bool, model: str) -> tuple[int, int]:
+                     commit: bool, model: str, sf_cur=None) -> tuple[int, int]:
     edges_data = get_advisory_graph(session, advisory_id)
     if not edges_data:
         return 0, 0
@@ -305,7 +306,16 @@ def process_advisory(advisory_id: str, session, cur, client: OpenAI,
         candidate_name = candidate_info['name']
         candidate_label = candidate_info['labels'][0] if candidate_info['labels'] else 'Other'
 
-        result = infer_relation(client, candidate_name, topic_name, report_text, model)
+        result, infer_usage = infer_relation(client, candidate_name, topic_name, report_text, model)
+        if infer_usage is not None:
+            log_llm_call(
+                pipeline_stage="relation_inference",
+                model=model,
+                prompt_tokens=infer_usage.prompt_tokens,
+                completion_tokens=infer_usage.completion_tokens,
+                advisory_id=advisory_id,
+                cur=sf_cur,
+            )
 
         if result is None:
             print(f"    ✗ ({candidate_name}, {topic_name}) → null")
@@ -317,7 +327,17 @@ def process_advisory(advisory_id: str, session, cur, client: OpenAI,
         rel_label = RELATION_MAP[rel]
 
         # Validate semantic correctness
-        if not validate_inference(client, subj, rel, obj, model="gpt-4o-mini"):
+        valid, validate_usage = validate_inference(client, subj, rel, obj, model="gpt-4o-mini")
+        if validate_usage is not None:
+            log_llm_call(
+                pipeline_stage="relation_inference",
+                model="gpt-4o-mini",
+                prompt_tokens=validate_usage.prompt_tokens,
+                completion_tokens=validate_usage.completion_tokens,
+                advisory_id=advisory_id,
+                cur=sf_cur,
+            )
+        if not valid:
             print(f"    ✗ ({subj}, {rel}, {obj}) → invalid semantics")
             continue
 
@@ -392,7 +412,7 @@ def main():
             print(f"\n[{mode}] {advisory_id}")
 
             attempted, succeeded = process_advisory(
-                advisory_id, session, cur, client, args.commit, args.model
+                advisory_id, session, cur, client, args.commit, args.model, sf_cur=cur
             )
             total_attempted += attempted
             total_succeeded += succeeded

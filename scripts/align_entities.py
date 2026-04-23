@@ -25,6 +25,7 @@ import snowflake.connector
 from openai import OpenAI
 
 from app.config import get_settings
+from app.token_logger import log_llm_call
 from scripts.collect_entities import pattern_classify, llm_classify
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ def is_named_entity(name: str) -> bool:
     return True
 
 
-def gpt4o_classify_pair(name_a: str, name_b: str, client: OpenAI, model: str) -> tuple[bool, str | None]:
+def gpt4o_classify_pair(name_a: str, name_b: str, client: OpenAI, model: str) -> tuple[bool, str | None, object]:
     try:
         response = client.chat.completions.create(
             model=model,
@@ -73,10 +74,10 @@ def gpt4o_classify_pair(name_a: str, name_b: str, client: OpenAI, model: str) ->
         parsed = json.loads(raw)
         same = parsed.get("same_entity", False)
         canonical = parsed.get("canonical_name")
-        return same, canonical
+        return same, canonical, response.usage
     except Exception as e:
         print(f"  !! GPT-4o failed for ({name_a}, {name_b}): {e}")
-        return False, None
+        return False, None, None
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -174,8 +175,16 @@ def main():
     for i, (name_a, type_a, name_b, type_b, score) in enumerate(candidate_pairs, 1):
         print(f"  [{i}/{len(candidate_pairs)}] '{name_a}' ↔ '{name_b}'  (sim={score:.3f})")
 
-        same, canonical = gpt4o_classify_pair(name_a, name_b, client, args.model)
+        same, canonical, usage = gpt4o_classify_pair(name_a, name_b, client, args.model)
         print(f"    same={same}  canonical={canonical}")
+        if usage is not None:
+            log_llm_call(
+                pipeline_stage="entity_deduplication",
+                model=args.model,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                cur=cur,
+            )
 
         if not same or not canonical:
             print(f"    → skipped")

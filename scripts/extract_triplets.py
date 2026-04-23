@@ -28,6 +28,7 @@ from openai import OpenAI
 from pydantic import BaseModel, field_validator
 
 from app.config import get_settings
+from app.token_logger import log_llm_call
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -219,6 +220,14 @@ def main():
             raw_text = response.choices[0].message.content
             total_input_tokens += response.usage.prompt_tokens
             total_output_tokens += response.usage.completion_tokens
+            log_llm_call(
+                pipeline_stage="triplet_extraction",
+                model=args.model,
+                prompt_tokens=response.usage.prompt_tokens,
+                completion_tokens=response.usage.completion_tokens,
+                advisory_id=advisory_id,
+                cur=cur,
+            )
         except Exception as e:
             print(f"  !! LLM call failed: {e}\n")
             continue

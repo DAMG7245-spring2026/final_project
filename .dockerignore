@@ -1,0 +1,80 @@
+# Keep build context small and keep secrets out of image layers.
+# Applies to every Docker build rooted at this repo (api, streamlit, airflow).
+
+# VCS
+.git/
+.gitattributes
+
+# Python byte-compiled / cache artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments (huge; OS-specific; never bake into images)
+.venv/
+venv/
+env/
+ENV/
+
+# Build / distribution outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test and lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.tox/
+.nox/
+.coverage
+htmlcov/
+coverage.xml
+.hypothesis/
+
+# IDE / editor state
+.idea/
+.vscode/
+.settings/
+*.swp
+*.swo
+
+# Secrets — NEVER bake into images
+.env
+.env.*
+!.env.example
+snowflake_credentials.json
+*.pem
+*.key
+
+# OS junk
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Local data / notebooks (regenerable via scripts/)
+data/
+notebooks/
+.ipynb_checkpoints/
+
+# Docs (not required at runtime)
+doc/
+
+# Tests (omit from runtime images; re-include if CI runs pytest inside the container)
+tests/
+
+# Airflow runtime state (volumes, not image-time artifacts)
+airflow/logs/
+airflow_logs/
+airflow_postgres_data/
+
+# Docker compose override files (developer-local)
+docker-compose.override.yml
+docker-compose.*.override.yml

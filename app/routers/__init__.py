@@ -9,6 +9,8 @@ from .query import router as query_router
 from .technique import router as technique_router
 from .vector_search import router as vector_search_router
 from .graph_query import router as graph_query_router
+from .weekly_brief import router as weekly_brief_router
+from .weekly_digest import router as weekly_digest_router
 
 __all__ = [
     "actor_router",
@@ -21,4 +23,6 @@ __all__ = [
     "technique_router",
     "vector_search_router",
     "graph_query_router",
+    "weekly_brief_router",
+    "weekly_digest_router",
 ]

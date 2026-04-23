@@ -16,6 +16,8 @@ from app.routers import (
     query_router,
     technique_router,
     vector_search_router,
+    weekly_brief_router,
+    weekly_digest_router,
 )
 from app.services.bm25_index import load_or_build_bm25_index
 
@@ -91,7 +93,9 @@ def create_app() -> FastAPI:
     app.include_router(vector_search_router)
     app.include_router(hybrid_search_router)
     app.include_router(graph_query_router)
-    
+    app.include_router(weekly_digest_router)
+    app.include_router(weekly_brief_router)
+
     # Global exception handler
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):

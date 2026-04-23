@@ -232,3 +232,28 @@ def load_or_build_bm25_index(
     _index = BM25Index.build_from_snowflake()
     _index.save(path)
     return _index
+
+
+def rebuild_bm25_index(path: str = DEFAULT_INDEX_PATH) -> dict:
+    """Unconditionally rebuild the BM25 index from Snowflake and save to pickle.
+
+    Refreshes the process-level singleton so in-process callers see the new
+    index immediately. Intended for ingestion pipelines (e.g. Airflow) that
+    need to rebuild after chunks change.
+    """
+    global _index
+    t0 = time.time()
+    index = BM25Index.build_from_snowflake()
+    index.save(path)
+    _index = index
+    elapsed = time.time() - t0
+    logger.info(
+        "[bm25] rebuild complete: num_docs=%d path=%s elapsed_sec=%.3f",
+        index.num_docs, path, elapsed,
+    )
+    return {
+        "num_docs": index.num_docs,
+        "path": path,
+        "built_at": index.built_at,
+        "elapsed_sec": elapsed,
+    }

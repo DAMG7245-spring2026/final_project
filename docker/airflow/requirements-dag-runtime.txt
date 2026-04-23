@@ -6,3 +6,12 @@ pydantic-settings>=2.1.0,<3.0.0
 httpx>=0.26.0,<0.28.0
 python-dotenv>=1.0.0,<2.0.0
 boto3>=1.34.0,<2.0.0
+# advisory_weekly_dag: scraper / chunker_v2 / classifier / bm25 index
+beautifulsoup4>=4.14.0,<5.0.0
+tiktoken>=0.12.0,<1.0.0
+nltk>=3.8.1,<4.0.0
+rank-bm25>=0.2.2,<0.3.0
+# advisory_weekly_dag: triplet pipeline (extract / align / load_neo4j / infer)
+openai>=2.32.0,<3.0.0
+neo4j>=6.1.0,<7.0.0
+structlog>=24.4.0,<25.0.0

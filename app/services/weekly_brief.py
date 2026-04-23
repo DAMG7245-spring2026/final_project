@@ -31,13 +31,15 @@ LLM-generated question without touching the fan-out or synthesis layers.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 
 import structlog
 from pydantic import BaseModel
 
+from app.services.hybrid_search import hybrid_search
 from app.services.llm_router import LLMTask, get_llm_router
-from app.services.rag_router import get_rag_router_service
+from app.services.text2cypher import get_text2cypher_service
 from app.services.weekly_digest import (
     DEFAULT_MAX_TIER,
     DEFAULT_NEWLY_ADDED_KEV_N,
@@ -158,13 +160,14 @@ Hard rules:
 # ---- per-CVE question template (option D) ---------------------------------
 
 
-def build_question(cve: WeeklyCve) -> str:
-    """Build the RAG question for one CVE.
+def build_text_question(cve: WeeklyCve) -> str:
+    """Question for the advisory-corpus retriever (BM25 + vector).
 
     Template with structured metadata injection. No LLM call — deterministic
     and free. Injects vendor / product / KEV / ransomware hints so
-    ``text2cypher`` (entity anchoring) and ``hybrid_search`` (BM25 terms)
-    get strong signal.
+    ``hybrid_search`` (BM25 terms + vector similarity) gets strong signal.
+    Mentions detection / mitigation / advisories freely — that's what the
+    advisory corpus contains.
     """
     vendor = cve.kev_vendor_project or "unknown vendor"
     product = cve.kev_product or "the affected product"
@@ -187,6 +190,26 @@ def build_question(cve: WeeklyCve) -> str:
     )
 
 
+def build_graph_question(cve: WeeklyCve) -> str:
+    """Question for the graph retriever (text2cypher).
+
+    Deliberately narrow: the graph schema has no advisory / detection /
+    mitigation nodes. Mentioning those terms makes text2cypher's LLM
+    classifier reject the question (``can_answer=false``). We ask only
+    about actors / malware / campaigns — the nodes that actually exist —
+    and name the product explicitly so the generated Cypher can UNION
+    a product-anchored ``USES|TARGETS`` path with the direct CVE
+    ``EXPLOITS`` path.
+    """
+    vendor = cve.kev_vendor_project or ""
+    product = cve.kev_product or ""
+    vp = (vendor + " " + product).strip() or "the affected product"
+    return (
+        f"Which threat actors, malware families, and campaigns are known to "
+        f"exploit {cve.cve_id}, or to use or target {vp}?"
+    )
+
+
 # ---- evidence pack --------------------------------------------------------
 
 
@@ -196,6 +219,9 @@ class CveEvidence(BaseModel):
     cve: WeeklyCve
     question: str
     rag_answer: str
+    graph_answer: str | None = None
+    text_answer: str | None = None
+    graph_cypher: str | None = None
     graph_row_count: int = 0
     chunk_count: int = 0
     route: str = RAG_FORCE_ROUTE
@@ -206,28 +232,68 @@ class CveEvidence(BaseModel):
 # ---- worker ---------------------------------------------------------------
 
 
+def _merge_answers(graph_answer: str | None, chunks: list[dict]) -> str:
+    """Stitch the text2cypher paragraph and the raw advisory chunks into a
+    labeled block. The synthesis prompt consumes ``rag_answer`` verbatim;
+    section headers keep graph vs. text provenance visible to the LLM.
+
+    Graph "no data found" templates are dropped so empty-graph weeks don't
+    pollute the prompt with boilerplate.
+    """
+    parts: list[str] = []
+    if graph_answer and "no matching data" not in graph_answer.lower():
+        parts.append("## Graph evidence\n" + graph_answer.strip())
+    if chunks:
+        chunk_texts = [
+            f"[{c.get('advisory_id', '?')} §{c.get('section_name') or '-'}] "
+            f"{c.get('chunk_text', '')}"
+            for c in chunks[:10]
+        ]
+        parts.append("## Advisory passages\n" + "\n\n".join(chunk_texts))
+    return "\n\n".join(parts) or "(no evidence returned)"
+
+
 def _invoke_rag(cve: WeeklyCve) -> CveEvidence:
-    """Sync worker — one RAG call per CVE, always via `force_route='both'`.
+    """Sync worker — one graph call + one text call per CVE, run in parallel.
 
     Wrapped with ``asyncio.to_thread`` by the caller so the event loop
-    stays unblocked. Runs synchronously to avoid rewriting the whole RAG
-    stack as async.
+    stays unblocked. Bypasses ``rag_router`` so we can feed each retriever
+    a question tailored to its capabilities (see ``build_graph_question``
+    vs. ``build_text_question``).
     """
-    rag = get_rag_router_service()
-    question = build_question(cve)
-    result = rag.answer(
-        question=question,
-        force_route=RAG_FORCE_ROUTE,
-    )
+    text2cypher = get_text2cypher_service()
+    graph_q = build_graph_question(cve)
+    text_q = build_text_question(cve)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        graph_fut = pool.submit(text2cypher.query, graph_q)
+        # No metadata filter: rely on BM25 + vector text match against the
+        # CVE id / vendor / product terms already baked into text_q.
+        # Pre-filtering by cve_ids was returning 0 chunks for all three CVEs
+        # this week — the advisory_chunks.cve_ids column isn't populated
+        # consistently enough to use as a hard filter.
+        text_fut = pool.submit(
+            hybrid_search,
+            query=text_q,
+            top_k=10,
+        )
+        graph = graph_fut.result()
+        chunks = text_fut.result()
+
+    graph_answer = graph.get("answer")
+    merged = _merge_answers(graph_answer, chunks)
     return CveEvidence(
         cve=cve,
-        question=question,
-        rag_answer=(result.get("answer") or "").strip(),
-        graph_row_count=int(result.get("graph_row_count") or 0),
-        chunk_count=len(result.get("chunks") or []),
-        route=str(result.get("route") or RAG_FORCE_ROUTE),
-        route_reasoning=result.get("route_reasoning"),
-        fallback_triggered=bool(result.get("fallback_triggered") or False),
+        question=f"[graph] {graph_q}\n[text] {text_q}",
+        rag_answer=merged,
+        graph_answer=graph_answer,
+        text_answer=None,
+        graph_cypher=graph.get("cypher"),
+        graph_row_count=int(graph.get("row_count") or 0),
+        chunk_count=len(chunks),
+        route="both",
+        route_reasoning="bypassed rag_router — split graph/text questions",
+        fallback_triggered=False,
     )
 
 
@@ -397,6 +463,7 @@ async def generate_weekly_brief(
     limit: int = DEFAULT_TOP_N,
     max_tier: int = DEFAULT_MAX_TIER,
     newly_added_limit: int = DEFAULT_NEWLY_ADDED_KEV_N,
+    ingested_after: datetime | None = None,
 ) -> WeeklyBrief:
     """Run the full digest → fan-out → synthesise pipeline.
 
@@ -414,6 +481,7 @@ async def generate_weekly_brief(
         limit=limit,
         max_tier=max_tier,
         newly_added_limit=newly_added_limit,
+        ingested_after=ingested_after,
     )
     summary: WeeklyDigestSummary = digest["summary"]
     top: list[WeeklyCve] = digest["top_cves"]

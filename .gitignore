@@ -87,7 +87,7 @@ ehthumbs.db
 Desktop.ini
 
 # ==============================================
-# Environment Variables (重要！不要 commit 密碼)
+# Environment Variables 
 # ==============================================
 .env
 .env.local

@@ -106,6 +106,7 @@ WITH window_rows AS (
     SELECT *
     FROM cve_records
     WHERE vuln_status <> 'REJECTED'
+      AND (%(ingested_after)s IS NULL OR ingested_at >= %(ingested_after)s)
       AND (
           (last_modified >= %(start_ts)s AND last_modified < %(end_ts)s)
           OR (is_kev = TRUE
@@ -207,6 +208,7 @@ SELECT
     kev_product
 FROM cve_records
 WHERE vuln_status <> 'REJECTED'
+  AND (%(ingested_after)s IS NULL OR ingested_at >= %(ingested_after)s)
   AND is_kev = TRUE
   AND kev_date_added >= %(start_date)s
   AND kev_date_added < %(end_date)s
@@ -234,6 +236,7 @@ SELECT
     COUNT_IF(has_exploit_ref = TRUE) AS has_exploit_ref_count
 FROM cve_records
 WHERE vuln_status <> 'REJECTED'
+  AND (%(ingested_after)s IS NULL OR ingested_at >= %(ingested_after)s)
   AND (
       (last_modified >= %(start_ts)s AND last_modified < %(end_ts)s)
       OR (is_kev = TRUE
@@ -267,7 +270,12 @@ def _resolve_window(
     return window_start, window_end
 
 
-def _params(window_start: date, window_end: date, **extra) -> dict:
+def _params(
+    window_start: date,
+    window_end: date,
+    ingested_after: datetime | None = None,
+    **extra,
+) -> dict:
     """Build the param dict used by both SQL queries.
 
     ``last_modified`` is TIMESTAMP_NTZ so we pass naive datetimes; KEV /
@@ -279,6 +287,7 @@ def _params(window_start: date, window_end: date, **extra) -> dict:
         "end_date": window_end,
         "start_ts": datetime.combine(window_start, datetime.min.time()),
         "end_ts": datetime.combine(window_end, datetime.min.time()),
+        "ingested_after": ingested_after,
         **extra,
     }
 
@@ -292,6 +301,7 @@ def top_cves(
     window_end: date | None = None,
     limit: int = DEFAULT_TOP_N,
     max_tier: int = DEFAULT_MAX_TIER,
+    ingested_after: datetime | None = None,
 ) -> list[WeeklyCve]:
     """Return tier-ranked CVEs modified (or KEV-added) within the window.
 
@@ -299,7 +309,13 @@ def top_cves(
     top 10 rows. Pass ``max_tier=5`` to include the low-signal tail.
     """
     start_d, end_d = _resolve_window(window_start, window_end)
-    params = _params(start_d, end_d, limit=int(limit), max_tier=int(max_tier))
+    params = _params(
+        start_d,
+        end_d,
+        ingested_after=ingested_after,
+        limit=int(limit),
+        max_tier=int(max_tier),
+    )
 
     sf = get_snowflake_service()
     rows = sf.execute_query(_TOP_CVES_SQL, params)
@@ -319,10 +335,11 @@ def summary_counts(
     *,
     window_start: date | None = None,
     window_end: date | None = None,
+    ingested_after: datetime | None = None,
 ) -> WeeklyDigestSummary:
     """Return the headline counts for the week — goes above the top-N list."""
     start_d, end_d = _resolve_window(window_start, window_end)
-    params = _params(start_d, end_d)
+    params = _params(start_d, end_d, ingested_after=ingested_after)
 
     sf = get_snowflake_service()
     row = sf.execute_one(_SUMMARY_SQL, params) or {}
@@ -346,6 +363,7 @@ def newly_added_kev(
     window_start: date | None = None,
     window_end: date | None = None,
     limit: int = DEFAULT_NEWLY_ADDED_KEV_N,
+    ingested_after: datetime | None = None,
 ) -> list[WeeklyCve]:
     """CVEs added to the CISA KEV catalog within the window.
 
@@ -365,7 +383,9 @@ def newly_added_kev(
     ``tier_reason = 'KEV added this week'`` for display consistency.
     """
     start_d, end_d = _resolve_window(window_start, window_end)
-    params = _params(start_d, end_d, limit=int(limit))
+    params = _params(
+        start_d, end_d, ingested_after=ingested_after, limit=int(limit)
+    )
 
     sf = get_snowflake_service()
     rows = sf.execute_query(_NEWLY_ADDED_KEV_SQL, params)
@@ -387,6 +407,7 @@ def weekly_digest(
     limit: int = DEFAULT_TOP_N,
     max_tier: int = DEFAULT_MAX_TIER,
     newly_added_limit: int = DEFAULT_NEWLY_ADDED_KEV_N,
+    ingested_after: datetime | None = None,
 ) -> dict:
     """One-shot convenience: summary + top CVEs + newly-added KEV in one dict.
 
@@ -405,16 +426,20 @@ def weekly_digest(
     fill every slot in ``top_cves``.
     """
     start_d, end_d = _resolve_window(window_start, window_end)
-    summary = summary_counts(window_start=start_d, window_end=end_d)
+    summary = summary_counts(
+        window_start=start_d, window_end=end_d, ingested_after=ingested_after
+    )
     top = top_cves(
         window_start=start_d,
         window_end=end_d,
         limit=limit,
         max_tier=max_tier,
+        ingested_after=ingested_after,
     )
     newly = newly_added_kev(
         window_start=start_d,
         window_end=end_d,
         limit=newly_added_limit,
+        ingested_after=ingested_after,
     )
     return {"summary": summary, "top_cves": top, "newly_added_kev": newly}

@@ -18,11 +18,18 @@ left to BM25 text matching unless a caller passes them explicitly —
 document_type is the primary routing signal for AI-agent use via MCP.
 """
 
+import time
+import uuid
 from typing import Any, Optional
+
+import structlog
+from structlog.contextvars import bound_contextvars
 
 from app.services.bm25_index import get_bm25_index
 from app.services.snowflake import get_snowflake_service
 from app.services.vector_search import search_advisory_chunks
+
+log = structlog.get_logger(__name__)
 
 
 def _fetch_chunks_by_ids(
@@ -124,78 +131,135 @@ def hybrid_search(
     """
     alpha = max(0.0, min(1.0, alpha))
 
-    # 1. BM25 branch
-    bm25_hits = get_bm25_index().search(query, top_n=top_n)
-    bm25_rank: dict[str, int] = {h.chunk_id: h.rank for h in bm25_hits}
-    bm25_score: dict[str, float] = {h.chunk_id: h.score for h in bm25_hits}
+    request_id = uuid.uuid4().hex[:12]
+    with bound_contextvars(
+        request_id=request_id,
+        query_preview=query[:160],
+    ):
+        log.info(
+            "hybrid_search_start",
+            top_k=top_k,
+            top_n=top_n,
+            alpha=alpha,
+            k_rrf=k_rrf,
+            filter_document_types=document_types,
+            filter_section_names=section_names,
+            filter_cve_ids=cve_ids,
+            filter_cwe_ids=cwe_ids,
+            filter_mitre_tech_ids=mitre_tech_ids,
+            filter_advisory_ids=advisory_ids,
+            min_vector_score=min_vector_score,
+            used_cached_embedding=query_embedding is not None,
+        )
 
-    # 2. Vector branch (reuses existing service + filters).
-    # `query_embedding` short-circuits the Cortex round-trip; useful for
-    # eval loops that run the same query under many configs.
-    vec_rows = search_advisory_chunks(
-        query=query,
-        top_k=top_n,
-        document_types=document_types,
-        section_names=section_names,
-        cve_ids=cve_ids,
-        cwe_ids=cwe_ids,
-        mitre_tech_ids=mitre_tech_ids,
-        advisory_ids=advisory_ids,
-        min_score=min_vector_score,
-        query_embedding=query_embedding,
-    )
-    vec_rank: dict[str, int] = {r["chunk_id"]: i + 1 for i, r in enumerate(vec_rows)}
-    vec_score: dict[str, float] = {
-        r["chunk_id"]: float(r["score"]) if r.get("score") is not None else 0.0
-        for r in vec_rows
-    }
-    row_by_id: dict[str, dict[str, Any]] = {r["chunk_id"]: r for r in vec_rows}
+        t0 = time.perf_counter()
 
-    # 3. RRF fusion
-    all_ids = set(bm25_rank) | set(vec_rank)
-    fused: list[tuple[str, float]] = []
-    for cid in all_ids:
-        score = 0.0
-        if cid in bm25_rank:
-            score += (1.0 - alpha) / (k_rrf + bm25_rank[cid])
-        if cid in vec_rank:
-            score += alpha / (k_rrf + vec_rank[cid])
-        fused.append((cid, score))
-    fused.sort(key=lambda x: x[1], reverse=True)
+        # 1. BM25 branch
+        t_bm25 = time.perf_counter()
+        bm25_hits = get_bm25_index().search(query, top_n=top_n)
+        bm25_rank: dict[str, int] = {h.chunk_id: h.rank for h in bm25_hits}
+        bm25_score: dict[str, float] = {h.chunk_id: h.score for h in bm25_hits}
+        log.info(
+            "hybrid_search_bm25_done",
+            bm25_hits=len(bm25_hits),
+            latency_ms=round((time.perf_counter() - t_bm25) * 1000, 1),
+        )
 
-    # 4. Enrich BM25-only hits (and apply filters to them).
-    # Over-fetch a bit so filter drops don't shrink us below top_k.
-    fetch_pool = fused[: top_k * 3]
-    missing = [cid for cid, _ in fetch_pool if cid not in row_by_id]
-    if missing:
-        enriched = _fetch_chunks_by_ids(
-            missing,
+        # 2. Vector branch (reuses existing service + filters).
+        # `query_embedding` short-circuits the Cortex round-trip; useful for
+        # eval loops that run the same query under many configs.
+        t_vec = time.perf_counter()
+        vec_rows = search_advisory_chunks(
+            query=query,
+            top_k=top_n,
             document_types=document_types,
             section_names=section_names,
             cve_ids=cve_ids,
             cwe_ids=cwe_ids,
             mitre_tech_ids=mitre_tech_ids,
             advisory_ids=advisory_ids,
+            min_score=min_vector_score,
+            query_embedding=query_embedding,
         )
-        row_by_id.update(enriched)
+        vec_rank: dict[str, int] = {r["chunk_id"]: i + 1 for i, r in enumerate(vec_rows)}
+        vec_score: dict[str, float] = {
+            r["chunk_id"]: float(r["score"]) if r.get("score") is not None else 0.0
+            for r in vec_rows
+        }
+        row_by_id: dict[str, dict[str, Any]] = {r["chunk_id"]: r for r in vec_rows}
+        log.info(
+            "hybrid_search_vector_done",
+            vector_hits=len(vec_rows),
+            latency_ms=round((time.perf_counter() - t_vec) * 1000, 1),
+        )
 
-    # 5. Build final ordered results, dropping ids that failed enrichment
-    # (either filtered out or not found).
-    results: list[dict[str, Any]] = []
-    for cid, rrf_score in fused:
-        row = row_by_id.get(cid)
-        if row is None:
-            continue
-        out = dict(row)
-        out["rrf_score"] = rrf_score
-        out["bm25_rank"] = bm25_rank.get(cid)
-        out["vec_rank"] = vec_rank.get(cid)
-        out["bm25_score"] = bm25_score.get(cid)
-        out["vector_score"] = vec_score.get(cid)
-        results.append(out)
-        if len(results) >= top_k:
-            break
-    return results
+        # 3. RRF fusion
+        all_ids = set(bm25_rank) | set(vec_rank)
+        fused: list[tuple[str, float]] = []
+        for cid in all_ids:
+            score = 0.0
+            if cid in bm25_rank:
+                score += (1.0 - alpha) / (k_rrf + bm25_rank[cid])
+            if cid in vec_rank:
+                score += alpha / (k_rrf + vec_rank[cid])
+            fused.append((cid, score))
+        fused.sort(key=lambda x: x[1], reverse=True)
+
+        overlap = len(set(bm25_rank) & set(vec_rank))
+
+        # 4. Enrich BM25-only hits (and apply filters to them).
+        # Over-fetch a bit so filter drops don't shrink us below top_k.
+        fetch_pool = fused[: top_k * 3]
+        missing = [cid for cid, _ in fetch_pool if cid not in row_by_id]
+        enriched_count = 0
+        if missing:
+            t_enrich = time.perf_counter()
+            enriched = _fetch_chunks_by_ids(
+                missing,
+                document_types=document_types,
+                section_names=section_names,
+                cve_ids=cve_ids,
+                cwe_ids=cwe_ids,
+                mitre_tech_ids=mitre_tech_ids,
+                advisory_ids=advisory_ids,
+            )
+            enriched_count = len(enriched)
+            row_by_id.update(enriched)
+            log.info(
+                "hybrid_search_enrich_done",
+                missing=len(missing),
+                enriched=enriched_count,
+                latency_ms=round((time.perf_counter() - t_enrich) * 1000, 1),
+            )
+
+        # 5. Build final ordered results, dropping ids that failed enrichment
+        # (either filtered out or not found).
+        results: list[dict[str, Any]] = []
+        for cid, rrf_score in fused:
+            row = row_by_id.get(cid)
+            if row is None:
+                continue
+            out = dict(row)
+            out["rrf_score"] = rrf_score
+            out["bm25_rank"] = bm25_rank.get(cid)
+            out["vec_rank"] = vec_rank.get(cid)
+            out["bm25_score"] = bm25_score.get(cid)
+            out["vector_score"] = vec_score.get(cid)
+            results.append(out)
+            if len(results) >= top_k:
+                break
+
+        log.info(
+            "hybrid_search_done",
+            bm25_hits=len(bm25_hits),
+            vector_hits=len(vec_rows),
+            overlap=overlap,
+            fused_total=len(fused),
+            enriched=enriched_count,
+            returned=len(results),
+            latency_ms=round((time.perf_counter() - t0) * 1000, 1),
+        )
+        return results
 
 
 def hybrid_search_simple(

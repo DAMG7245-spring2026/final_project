@@ -1,14 +1,15 @@
-"""Build the BM25 index over advisory_chunks.chunk_text and pickle it.
+"""CLI wrapper for app.services.bm25_index — build or refresh the BM25 pickle.
 
 Usage:
-    python scripts/build_bm25_index.py               # default path data/bm25_index.pkl
+    python scripts/build_bm25_index.py               # load cache if present, else build
     python scripts/build_bm25_index.py --output foo.pkl
-    python scripts/build_bm25_index.py --force       # rebuild even if cache exists
+    python scripts/build_bm25_index.py --force       # rebuild from Snowflake unconditionally
 
 Invoked automatically at FastAPI startup (see app/main.py lifespan),
-but also safe to run manually after a re-chunk / re-ingest.
+and also wired as the final task of ``advisory_weekly_dag``.
 """
 import argparse
+import json
 import logging
 import sys
 
@@ -18,8 +19,8 @@ load_dotenv()
 
 from app.services.bm25_index import (
     DEFAULT_INDEX_PATH,
-    BM25Index,
     load_or_build_bm25_index,
+    rebuild_bm25_index,
 )
 
 
@@ -38,14 +39,11 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.force:
-        index = BM25Index.build_from_snowflake()
-        index.save(args.output)
+        stats = rebuild_bm25_index(path=args.output)
+        print(json.dumps(stats, indent=2, default=str))
     else:
         index = load_or_build_bm25_index(path=args.output)
-
-    print(
-        f"[bm25] ready: {index.num_docs} docs indexed -> {args.output}"
-    )
+        print(f"[bm25] ready: {index.num_docs} docs indexed -> {args.output}")
     return 0
 
 

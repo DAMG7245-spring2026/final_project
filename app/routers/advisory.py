@@ -88,19 +88,17 @@ def advisories_by_cves(body: AdvisoriesByCvesRequest) -> list[AdvisoryWithMatche
         return []
 
     placeholders = ",".join(["%s"] * len(cve_ids))
-    # ARRAYS_OVERLAP would be tidier, but it needs both sides as ARRAY and the
-    # snowflake-python-connector binds Python lists as VARIANT of string, not
-    # ARRAY — LATERAL FLATTEN + IN sidesteps the cast entirely.
+    # Snowflake rejects correlated LATERAL FLATTEN inside EXISTS
+    # ("Unsupported subquery type"), so FLATTEN at the top level and DISTINCT
+    # the advisory rows. ARRAYS_OVERLAP would need ARRAY_CONSTRUCT to avoid
+    # the connector's VARIANT-of-string binding and loses the UPPER() guard.
     query = f"""
-        SELECT a.advisory_id, a.title, a.url, a.published_date,
+        SELECT DISTINCT a.advisory_id, a.title, a.url, a.published_date,
                a.advisory_type, a.document_type, a.s3_raw_path,
                a.cve_ids_mentioned
-        FROM advisories a
-        WHERE EXISTS (
-            SELECT 1
-            FROM LATERAL FLATTEN(input => a.cve_ids_mentioned) f
-            WHERE UPPER(f.value::string) IN ({placeholders})
-        )
+        FROM advisories a,
+             LATERAL FLATTEN(input => a.cve_ids_mentioned) f
+        WHERE UPPER(f.value::string) IN ({placeholders})
         ORDER BY a.published_date DESC NULLS LAST
     """
     rows = get_snowflake_service().execute_query(query, tuple(cve_ids))

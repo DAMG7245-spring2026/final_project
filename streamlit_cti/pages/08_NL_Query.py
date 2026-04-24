@@ -1,5 +1,9 @@
+import os
+
 import streamlit as st
 import requests
+
+API_BASE = os.getenv("CTI_API_BASE", "http://localhost:8000")
 
 st.set_page_config(page_title="CTI — NL Query", layout="wide")
 
@@ -10,7 +14,7 @@ q = st.text_area("Question", value="Which malware targets healthcare organizatio
 if st.button("Send", type="primary"):
     def stream_response():
         with requests.post(
-            "http://localhost:8000/query/stream",
+            f"{API_BASE}/query/stream",
             json={"question": q.strip()},
             stream=True,
             timeout=120,
@@ -23,6 +27,6 @@ if st.button("Send", type="primary"):
     try:
         st.write_stream(stream_response())
     except requests.exceptions.ConnectionError:
-        st.error("Cannot connect to backend at http://localhost:8000")
+        st.error(f"Cannot connect to backend at {API_BASE}")
     except Exception as e:
         st.error(str(e))

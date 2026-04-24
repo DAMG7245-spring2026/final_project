@@ -8,6 +8,49 @@ WE ATTEST THAT WE HAVEN'T USED ANY OTHER STUDENTS' WORK IN OUR ASSIGNMENT AND AB
 
 ---
 
+## Link
+- Viode Link: https://youtu.be/6Dxqd9D894g
+- website Link: http://35.93.255.114:8501/
+- google doc link: https://docs.google.com/document/d/1DCMEa1o1iLaozGY0VpRLzGYv_xMwoFTxowT8HaJmbcA
+- colab link: 
+
+## Prerequisites
+
+| Requirement | Version |
+|------------|---------|
+| Python | 3.11+ |
+| Poetry | 2.2.1 |
+| Pydantic | 2.5.3 |
+| Docker | 20.10.24 |
+| Docker Compose | 2.17.2 |
+| Snowflake | — |
+| AWS S3 bucket | — |
+| AWS EC2 | — |
+| OpenAI API key | GPT-4o |
+| Neo4j AuraDB instance | — |
+
+## Running Locally
+
+```bash
+# Install dependencies
+poetry install
+
+# Start Redis
+docker run -d --name redis-local -p 6379:6379 redis:7-alpine
+
+
+# Start the server
+poetry run uvicorn app.main:app --reload --port 8000
+```
+
+API docs available at `http://localhost:8000/docs`
+
+## Running with Docker
+
+```bash
+docker compose -f docker/docker-compose.yml --env-file .env up --build
+```
+
 ## Problem Statement
 
 Cybersecurity analysts face a huge volume of cybersecurity threat reports scattered across different sources. Answering questions like "What could be the effect when attackers use some method to attack the server?" requires manually reading from different reports or references; this process may take hours to find the answer.
@@ -90,31 +133,6 @@ Orchestration lives under [`airflow/dags/`](airflow/dags/). The repo [`README.md
 
 This pipeline ingests **CISA Cybersecurity Advisories** (HTML) and converts them into structured, searchable knowledge — chunks stored in Snowflake with vector embeddings, and knowledge-graph triplets in neo4j.
 
----
-
-## Prerequisites
-
-| Requirement | Version |
-|------------|---------|
-| Python | 3.11+ |
-| Poetry | 2.2.1 |
-| Pydantic | 2.5.3 |
-| Docker | 20.10.24 |
-| Docker Compose | 2.17.2 |
-| Snowflake | — |
-| AWS S3 bucket | — |
-| AWS EC2 | — |
-| OpenAI API key | GPT-4o |
-| Neo4j AuraDB instance | — |
-
-## Table of Contents
-
-1. [CTI Graph Console (application deliverables)](#cti-graph-console-application-deliverables)
-2. [Overview](#overview)
-3. [Architecture](#architecture)
-4. [User Flow](#user-flow)
-5. [Prerequisites](#prerequisites)
-6. [Environment Setup](#environment-setup)
 
 ---
 
@@ -611,24 +629,44 @@ NEO4J_PASSWORD=
 
 ---
 
-## Running Locally
+### Triplet Extraction Evaluation
 
-```bash
-# Install dependencies
-poetry install
+We evaluate extraction quality using the 100 manually annotated advisories in the demonstration pool (623 gold triplets total). The script `scripts/evaluate_triplet.py` re-runs the full pipeline on each advisory — kNN demo retrieval, GPT-4o prediction, and filtering — but writes nothing to the database. The predicted triplets are then compared against the hand-labelled gold to compute **Precision**, **Recall**, and **F1**. Our target is F1 ≥ 0.75.
 
-# Start Redis
-docker run -d --name redis-local -p 6379:6379 redis:7-alpine
+![F1](<a1.png>)
 
 
-# Start the server
-poetry run uvicorn app.main:app --reload --port 8000
-```
+### Triplet Rejection Strategy
 
-API docs available at `http://localhost:8000/docs`
+When GPT-4o returns a list of candidate triplets, three filters are applied in sequence before anything is written to Snowflake.
 
-## Running with Docker
+The first filter checks the relation name against a whitelist of exactly 7 allowed values: `uses`, `targets`, `exploits`, `attributed_to`, `affects`, `has_weakness`, and `mitigates`. Any other relation string is discarded. These relations were removed during development because they either overlap semantically with whitelisted ones, appear almost exclusively on IOC nodes that are out of scope, or are too vague to add signal to the graph.
 
-```bash
-docker compose -f docker/docker-compose.yml --env-file .env up --build
-```
+The second filter rejects triplets where the subject or object is a non-specific noun phrase. A denylist covers terms like `the attacker`, `malicious actors`, `threat actor`, `the group`, and similar generic references that do not correspond to a named real-world entity.
+
+![Triplet rejection](<a2.png>)
+
+
+
+
+---
+
+## AI Usage Disclosure
+
+| Tool | Part of Project | How It Was Used |
+|------|----------------|-----------------|
+| **OpenAI GPT-4o** | LLM Extraction Pipeline | Triplet extraction from CISA advisory reports using prompting approach (subject, relation, object triples with a fixed relation whitelist) |
+| **OpenAI GPT-4o** | Entity Alignment | Identifying aliases for the same real-world entity and normalizing extracted triplets to canonical names |
+| **OpenAI GPT-4o** | Relation Inference | Inferring missing relationships between disconnected subgraphs in the knowledge graph |
+| **OpenAI GPT-4o** | Text to Cypher (Natural Language Query) | Translating user natural-language questions into Cypher queries for Neo4j, and summarizing graph query results into readable answers |
+| **OpenAI GPT-4o-mini** | Entity Type Classification | Classifying entity nodes (Actor, Malware, Technique, etc.) |
+| **LiteLLM** (via custom LLM Router) | Runtime LLM Orchestration | All runtime LLM calls in the FastAPI app are routed through a LLMRouter built on LiteLLM. It maps each task for example, Cypher generation, answer generation, RAG routing, and tracks per-call token usage and cost |
+| **Claude Code** | Development | Assisting with writing and debugging Python pipeline scripts |
+
+
+
+Metrics
+![API lantency](<a3.png>)
+![Trunk time](<a4.png>)
+![Token consuming1](<a5.png>)
+![Token consuming2](<a6.png>)

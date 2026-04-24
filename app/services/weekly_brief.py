@@ -253,6 +253,12 @@ class CveEvidence(BaseModel):
     route: str = RAG_FORCE_ROUTE
     route_reasoning: str | None = None
     fallback_triggered: bool = False
+    # LLM usage from text2cypher (cypher generation + answer generation).
+    # hybrid_search has no LLM so text-retrieval contributes 0.
+    graph_prompt_tokens: int = 0
+    graph_completion_tokens: int = 0
+    graph_cost_usd: float = 0.0
+    graph_llm_calls: int = 0
 
 
 # ---- worker ---------------------------------------------------------------
@@ -313,6 +319,7 @@ def _invoke_rag(cve: WeeklyCve) -> CveEvidence:
         aid = c.get("advisory_id")
         if aid and aid not in seen_adv:
             seen_adv[aid] = None
+    g_usage = graph.get("usage") or {}
     return CveEvidence(
         cve=cve,
         question=f"[graph] {graph_q}\n[text] {text_q}",
@@ -326,6 +333,10 @@ def _invoke_rag(cve: WeeklyCve) -> CveEvidence:
         route="both",
         route_reasoning="bypassed rag_router — split graph/text questions",
         fallback_triggered=False,
+        graph_prompt_tokens=int(g_usage.get("prompt_tokens") or 0),
+        graph_completion_tokens=int(g_usage.get("completion_tokens") or 0),
+        graph_cost_usd=float(g_usage.get("cost_usd") or 0.0),
+        graph_llm_calls=int(g_usage.get("call_count") or 0),
     )
 
 
@@ -510,9 +521,12 @@ def _stream_synthesize_brief(
     top_cves: list[WeeklyCve],
     newly_added_kev: list[WeeklyCve],
     evidence: list[CveEvidence],
+    usage_sink: dict | None = None,
 ) -> Iterator[str]:
     """Token-streaming synthesis. Yields markdown deltas; cost is logged
-    by ``LLMRouter.stream_complete`` when the stream finishes."""
+    by ``LLMRouter.stream_complete`` when the stream finishes. Optional
+    ``usage_sink`` is populated with prompt/completion tokens, cost_usd,
+    and daily_spend/budget after the stream ends."""
     router = get_llm_router()
     overlap_ids = {c.cve_id for c in top_cves} & {c.cve_id for c in newly_added_kev}
     yield from router.stream_complete(
@@ -527,6 +541,7 @@ def _stream_synthesize_brief(
             "n_evidence": len(evidence),
             "n_overlap": len(overlap_ids),
         },
+        usage_sink=usage_sink,
     )
 
 
@@ -673,7 +688,8 @@ async def stream_weekly_brief(
 
     # 3. Stream synthesis tokens. ``stream_complete`` is a sync generator —
     # pull chunks on a thread so the event loop stays free.
-    gen = _stream_synthesize_brief(summary, top, newly, evidence)
+    usage_sink: dict = {}
+    gen = _stream_synthesize_brief(summary, top, newly, evidence, usage_sink=usage_sink)
     total_chars = 0
     while True:
         delta = await asyncio.to_thread(next, gen, None)
@@ -682,6 +698,23 @@ async def stream_weekly_brief(
         total_chars += len(delta)
         yield ("markdown", json.dumps({"delta": delta}))
 
+    # Aggregate totals across the whole workflow: every CVE worker's
+    # text2cypher usage + the single synthesis call. hybrid_search has no
+    # LLM so there's nothing to add from the text-retrieval path.
+    fanout_prompt_tokens = sum(e.graph_prompt_tokens for e in evidence)
+    fanout_completion_tokens = sum(e.graph_completion_tokens for e in evidence)
+    fanout_cost_usd = sum(e.graph_cost_usd for e in evidence)
+    fanout_llm_calls = sum(e.graph_llm_calls for e in evidence)
+
+    synthesis_prompt_tokens = int(usage_sink.get("prompt_tokens") or 0)
+    synthesis_completion_tokens = int(usage_sink.get("completion_tokens") or 0)
+    synthesis_cost_usd = float(usage_sink.get("cost_usd") or 0.0)
+
+    total_prompt_tokens = fanout_prompt_tokens + synthesis_prompt_tokens
+    total_completion_tokens = fanout_completion_tokens + synthesis_completion_tokens
+    total_cost_usd = fanout_cost_usd + synthesis_cost_usd
+    total_llm_calls = fanout_llm_calls + (1 if synthesis_prompt_tokens else 0)
+
     yield (
         "done",
         json.dumps(
@@ -689,8 +722,34 @@ async def stream_weekly_brief(
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "worker_count": len(evidence),
                 "markdown_chars": total_chars,
+                # Synthesis-only usage (last LLM call).
+                "synthesis_prompt_tokens": synthesis_prompt_tokens,
+                "synthesis_completion_tokens": synthesis_completion_tokens,
+                "synthesis_cost_usd": synthesis_cost_usd,
+                # Fan-out usage (sum across every per-CVE text2cypher call).
+                "fanout_prompt_tokens": fanout_prompt_tokens,
+                "fanout_completion_tokens": fanout_completion_tokens,
+                "fanout_cost_usd": fanout_cost_usd,
+                "fanout_llm_calls": fanout_llm_calls,
+                # Workflow totals.
+                "prompt_tokens_total": total_prompt_tokens,
+                "completion_tokens_total": total_completion_tokens,
+                "cost_usd_total": total_cost_usd,
+                "llm_calls_total": total_llm_calls,
+                # Daily budget state (read at synthesis-call completion).
+                "daily_spend_usd": usage_sink.get("daily_spend_usd"),
+                "daily_budget_usd": usage_sink.get("daily_budget_usd"),
             }
         ),
+    )
+    log.info(
+        "weekly_brief_workflow_usage",
+        window_start=summary.window_start.isoformat(),
+        window_end=summary.window_end.isoformat(),
+        prompt_tokens_total=total_prompt_tokens,
+        completion_tokens_total=total_completion_tokens,
+        cost_usd_total=round(total_cost_usd, 6),
+        llm_calls_total=total_llm_calls,
     )
     log.info(
         "weekly_brief_stream_done",

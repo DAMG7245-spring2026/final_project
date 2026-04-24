@@ -445,3 +445,57 @@ if cves_data:
             st.caption("No newly added KEV this week.")
         for cve in newly:
             _render_cve_expander(cve, evidence_by_id)
+
+
+# ---- LLM usage / cost footer (bottom) ------------------------------------
+
+done_info = st.session_state.done_info
+if done_info and done_info.get("completion_tokens_total") is not None:
+    st.markdown("---")
+    st.subheader("LLM usage — whole workflow")
+
+    total_ctok = done_info.get("completion_tokens_total") or 0
+    total_ptok = done_info.get("prompt_tokens_total") or 0
+    total_cost = float(done_info.get("cost_usd_total") or 0.0)
+    total_calls = done_info.get("llm_calls_total") or 0
+    budget = float(done_info.get("daily_budget_usd") or 0.0)
+    spend = float(done_info.get("daily_spend_usd") or 0.0)
+
+    cols = st.columns(4)
+    cols[0].metric("completion_tokens (total)", f"{total_ctok:,}")
+    cols[1].metric("cost_usd (total)", f"${total_cost:.6f}")
+    cols[2].metric("daily_budget_usd", f"${budget:.2f}")
+    cols[3].metric("daily_spend_usd", f"${spend:.6f}")
+
+    st.caption(
+        f"LLM calls: **{total_calls}** "
+        f"(fan-out text2cypher {done_info.get('fanout_llm_calls') or 0} + synthesis 1) · "
+        f"prompt tokens total: **{total_ptok:,}**"
+    )
+
+    with st.expander("Breakdown by stage", expanded=False):
+        bcols = st.columns(2)
+        with bcols[0]:
+            st.markdown("**Fan-out (text2cypher × N CVEs)**")
+            st.write(
+                {
+                    "llm_calls": done_info.get("fanout_llm_calls"),
+                    "prompt_tokens": done_info.get("fanout_prompt_tokens"),
+                    "completion_tokens": done_info.get("fanout_completion_tokens"),
+                    "cost_usd": round(
+                        float(done_info.get("fanout_cost_usd") or 0.0), 6
+                    ),
+                }
+            )
+        with bcols[1]:
+            st.markdown("**Synthesis (final markdown)**")
+            st.write(
+                {
+                    "llm_calls": 1 if done_info.get("synthesis_prompt_tokens") else 0,
+                    "prompt_tokens": done_info.get("synthesis_prompt_tokens"),
+                    "completion_tokens": done_info.get("synthesis_completion_tokens"),
+                    "cost_usd": round(
+                        float(done_info.get("synthesis_cost_usd") or 0.0), 6
+                    ),
+                }
+            )

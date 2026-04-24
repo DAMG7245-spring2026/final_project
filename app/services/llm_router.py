@@ -233,9 +233,16 @@ class LLMRouter:
         max_tokens: int | None = None,
         model_override: str | None = None,
         extra_log: dict[str, Any] | None = None,
+        usage_sink: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Iterator[str]:
-        """Streaming version of complete(). Yields token strings; logs usage after the stream ends."""
+        """Streaming version of complete(). Yields token strings; logs usage after the stream ends.
+
+        If ``usage_sink`` is provided, it is populated after the stream ends
+        with ``prompt_tokens``, ``completion_tokens``, ``cost_usd``,
+        ``daily_spend_usd``, ``daily_budget_usd`` — lets callers surface
+        usage without parsing log lines.
+        """
         task_key = task.value if isinstance(task, LLMTask) else task
         model = model_override or self.model_for(task_key)
         request_id = uuid.uuid4().hex[:12]
@@ -282,6 +289,16 @@ class LLMRouter:
             except Exception:
                 cost_usd = 0.0
             daily_spend = self._increment_spend(cost_usd)
+            if usage_sink is not None:
+                usage_sink.update(
+                    {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "cost_usd": cost_usd,
+                        "daily_spend_usd": daily_spend,
+                        "daily_budget_usd": self._settings.llm_daily_budget_usd,
+                    }
+                )
             log.info(
                 "llm_stream_call",
                 task=task_key,

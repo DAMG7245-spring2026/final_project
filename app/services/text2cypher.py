@@ -193,10 +193,26 @@ class Text2CypherService:
             advisory_ids=advisory_ids,
         )
 
+    @staticmethod
+    def _accumulate_usage(sink: dict | None, record: Any) -> None:
+        if sink is None or record is None:
+            return
+        sink["prompt_tokens"] = sink.get("prompt_tokens", 0) + int(
+            getattr(record, "prompt_tokens", 0) or 0
+        )
+        sink["completion_tokens"] = sink.get("completion_tokens", 0) + int(
+            getattr(record, "completion_tokens", 0) or 0
+        )
+        sink["cost_usd"] = sink.get("cost_usd", 0.0) + float(
+            getattr(record, "cost_usd", 0.0) or 0.0
+        )
+        sink["call_count"] = sink.get("call_count", 0) + 1
+
     def _generate_cypher(
         self,
         question: str,
         prior_attempt: dict[str, str] | None = None,
+        usage_sink: dict | None = None,
     ) -> tuple[str | None, str]:
         """Generate Cypher via OpenAI structured output.
 
@@ -230,6 +246,7 @@ class Text2CypherService:
         except Exception as e:
             log.exception("cypher_llm_call_failed", has_prior_attempt=prior_attempt is not None)
             return None, f"LLM call failed: {e}"
+        self._accumulate_usage(usage_sink, record)
 
         # LiteLLM returns structured output as a JSON string in message.content
         # rather than a hydrated Pydantic object, so we parse it ourselves.
@@ -258,7 +275,8 @@ class Text2CypherService:
         return parsed.cypher.strip(), parsed.reasoning
 
     def _generate_answer(self, question: str, cypher: str, results: list[dict],
-                         advisory_chunks: list[dict[str, Any]]) -> str:
+                         advisory_chunks: list[dict[str, Any]],
+                         usage_sink: dict | None = None) -> str:
         advisories_section = ""
         if advisory_chunks:
             excerpts = []
@@ -295,10 +313,17 @@ Raw results ({len(results)} rows):
                 "n_chunks": len(advisory_chunks),
             },
         )
+        self._accumulate_usage(usage_sink, record)
         return record.response.choices[0].message.content.strip()
 
     def query(self, question: str) -> dict[str, Any]:
         request_id = uuid.uuid4().hex[:12]
+        usage: dict[str, Any] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cost_usd": 0.0,
+            "call_count": 0,
+        }
         # Bind contextvars so every nested log line (including from
         # _generate_cypher / _generate_answer) carries request_id + question
         # without us having to pass a bound logger through each helper.
@@ -322,7 +347,7 @@ Raw results ({len(results)} rows):
                     if last_error and cypher is not None
                     else None
                 )
-                cypher, reasoning = self._generate_cypher(question, prior)
+                cypher, reasoning = self._generate_cypher(question, prior, usage_sink=usage)
 
                 if cypher is None:
                     if attempt == 0:
@@ -348,6 +373,7 @@ Raw results ({len(results)} rows):
                         "cypher": None,
                         "results": [],
                         "row_count": 0,
+                        "usage": usage,
                     }
 
                 log.info(
@@ -388,6 +414,7 @@ Raw results ({len(results)} rows):
                     "cypher": cypher,
                     "results": [],
                     "row_count": 0,
+                    "usage": usage,
                 }
 
             # Extract advisory_ids from results (any key containing advisory_id).
@@ -410,7 +437,9 @@ Raw results ({len(results)} rows):
                         n_advisory_ids=len(advisory_ids),
                     )
 
-            answer = self._generate_answer(question, cypher, results, advisory_chunks)
+            answer = self._generate_answer(
+                question, cypher, results, advisory_chunks, usage_sink=usage
+            )
 
             log.info(
                 "text2cypher_query_complete",
@@ -418,6 +447,10 @@ Raw results ({len(results)} rows):
                 n_advisory_ids=len(advisory_ids),
                 n_chunks=len(advisory_chunks),
                 answer_chars=len(answer),
+                usage_prompt_tokens=usage["prompt_tokens"],
+                usage_completion_tokens=usage["completion_tokens"],
+                usage_cost_usd=round(usage["cost_usd"], 6),
+                usage_call_count=usage["call_count"],
             )
 
             return {
@@ -425,6 +458,7 @@ Raw results ({len(results)} rows):
                 "cypher": cypher,
                 "results": results[:50],
                 "row_count": len(results),
+                "usage": usage,
             }
 
 

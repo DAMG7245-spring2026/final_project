@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     llm_model_rag_routing: str = "gpt-4o-mini"
     llm_model_default: str = "gpt-4o-mini"
     # Daily USD budget. When exceeded, LLMRouter raises BudgetExceededError.
-    llm_daily_budget_usd: float = 5.0
+    llm_daily_budget_usd: float = 10.0
     # When false, budget is only tracked + logged (soft mode), not enforced.
     llm_budget_enforce: bool = True
 

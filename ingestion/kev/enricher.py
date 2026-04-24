@@ -85,7 +85,14 @@ WHEN MATCHED THEN UPDATE SET
 MERGE_QUEUE_SQL = f"""
 MERGE INTO kev_pending_fetch AS q
 USING (
-    SELECT s.cve_id, s.kev_date_added
+    SELECT
+        s.cve_id,
+        s.kev_date_added,
+        s.kev_ransomware_use,
+        s.kev_required_action,
+        s.kev_due_date,
+        s.kev_vendor_project,
+        s.kev_product
     FROM {_STAGING_TABLE} AS s
     LEFT JOIN cve_records AS c
       ON c.cve_id = s.cve_id
@@ -94,9 +101,28 @@ USING (
 ON q.cve_id = m.cve_id
 WHEN MATCHED THEN UPDATE SET
     q.kev_date_added = COALESCE(m.kev_date_added, q.kev_date_added),
+    q.kev_ransomware_use = COALESCE(m.kev_ransomware_use, q.kev_ransomware_use),
+    q.kev_required_action = COALESCE(m.kev_required_action, q.kev_required_action),
+    q.kev_due_date = COALESCE(m.kev_due_date, q.kev_due_date),
+    q.kev_vendor_project = COALESCE(m.kev_vendor_project, q.kev_vendor_project),
+    q.kev_product = COALESCE(m.kev_product, q.kev_product),
     q.fetched = FALSE
-WHEN NOT MATCHED THEN INSERT (cve_id, kev_date_added, fetched)
-VALUES (m.cve_id, m.kev_date_added, FALSE)
+WHEN NOT MATCHED THEN INSERT (
+    cve_id, kev_date_added, kev_ransomware_use, kev_required_action,
+    kev_due_date, kev_vendor_project, kev_product, fetched
+)
+VALUES (
+    m.cve_id, m.kev_date_added, m.kev_ransomware_use, m.kev_required_action,
+    m.kev_due_date, m.kev_vendor_project, m.kev_product, FALSE
+)
+"""
+
+MARK_DIRTY_FROM_STAGING_SQL = f"""
+UPDATE cve_records AS r
+SET kev_neo4j_dirty = TRUE
+FROM {_STAGING_TABLE} AS s
+WHERE r.cve_id = s.cve_id
+  AND r.is_kev = TRUE
 """
 
 FALLBACK_INSERT_SQL = f"""
@@ -179,6 +205,7 @@ def _bulk_path(cur: Any, rows: list[dict[str, Any]]) -> None:
         cur.execute(put_sql)
         cur.execute(copy_sql)
         cur.execute(MERGE_EXISTING_SQL)
+        cur.execute(MARK_DIRTY_FROM_STAGING_SQL)
         cur.execute(MERGE_QUEUE_SQL)
     finally:
         try:
@@ -206,6 +233,7 @@ def _fallback_path(cur: Any, rows: list[dict[str, Any]], chunk_size: int = 1000)
         ]
         cur.executemany(FALLBACK_INSERT_SQL, params)
     cur.execute(MERGE_EXISTING_SQL)
+    cur.execute(MARK_DIRTY_FROM_STAGING_SQL)
     cur.execute(MERGE_QUEUE_SQL)
 
 
@@ -233,8 +261,12 @@ def _count_joined(cur: Any, rows: list[dict[str, Any]]) -> tuple[int, int]:
     return int(result[0] or 0), int(result[1] or 0)
 
 
-def run_kev_sync(feed_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Fetch KEV catalog and enrich Snowflake with bulk-first strategy."""
+def run_fetch_and_enrich(feed_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """
+    Task 1: CISA KEV JSON → Snowflake ``cve_records`` (matched rows) + ``kev_pending_fetch``
+    for CVEs not yet in NVD. Marks ``kev_neo4j_dirty`` for updated in-catalog CVEs.
+    Does not call NVD or Neo4j.
+    """
     run_id = uuid4().hex[:12]
     started = perf_counter()
     mode = "bulk"
@@ -316,5 +348,21 @@ def run_kev_sync(feed_rows: list[dict[str, Any]] | None = None) -> dict[str, Any
         "missing_count": missing_count,
         "elapsed_sec": elapsed,
         "timings_sec": timings,
+    }
+
+
+def run_kev_sync(feed_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """CLI compatibility: fetch_and_enrich → resolve_pending → sync_kev_neo4j."""
+    from ingestion.graph_sync.kev_neo4j_sync import run_sync_kev_neo4j
+    from ingestion.kev.pending_resolver import run_resolve_kev_pending
+
+    out1 = run_fetch_and_enrich(feed_rows=feed_rows)
+    out2 = run_resolve_kev_pending()
+    out3 = run_sync_kev_neo4j()
+    # Flatten task1 fields for CLI/tests expecting legacy run_kev_sync shape.
+    return {
+        **out1,
+        "resolve_pending": out2,
+        "sync_kev_neo4j": out3,
     }
 

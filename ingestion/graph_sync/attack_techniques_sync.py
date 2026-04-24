@@ -21,6 +21,41 @@ _ENSURE_TECHNIQUE_CONSTRAINT = """
 CREATE CONSTRAINT technique_id_unique IF NOT EXISTS FOR (n:Technique) REQUIRE n.id IS UNIQUE
 """
 
+
+def _drop_unsafe_technique_name_uniqueness(tx: Any) -> None:
+    """
+    MITRE allows multiple technique IDs to share the same display ``name`` (e.g. sub-techniques).
+    A uniqueness constraint on ``(:Technique).name`` (not from this repo) makes batch MERGE fail.
+    Drop **only** NODE uniqueness constraints scoped to ``Technique`` whose sole property is ``name``.
+    """
+    try:
+        rows = list(
+            tx.run(
+                """
+                SHOW CONSTRAINTS
+                YIELD name AS cname, entityType, labelsOrTypes, properties
+                WHERE entityType = 'NODE'
+                  AND labelsOrTypes IS NOT NULL
+                  AND 'Technique' IN labelsOrTypes
+                  AND properties = ['name']
+                RETURN cname
+                """
+            )
+        )
+    except Exception as exc:
+        logger.warning("Could not inspect Neo4j constraints (skipping name-uniqueness cleanup): %s", exc)
+        return
+    for rec in rows:
+        cname = str(rec.get("cname") or "").strip()
+        if not cname:
+            continue
+        safe = cname.replace("`", "")
+        try:
+            tx.run(f"DROP CONSTRAINT `{safe}` IF EXISTS")
+            logger.info("Dropped incompatible Neo4j constraint (Technique name uniqueness): %s", safe)
+        except Exception as exc:
+            logger.warning("Failed to drop constraint %s: %s", safe, exc)
+
 _MERGE_TECHNIQUE_BATCH = """
 UNWIND $rows AS row
 MERGE (t:Technique {id: row.id})
@@ -124,6 +159,10 @@ def run_attack_techniques_sync(
     MERGE ``(:Technique {id: mitre_id})`` from Snowflake ``attack_techniques`` and set
     ``loaded_to_neo4j`` when successful.
 
+    Before merging, drops any **NODE** constraint on ``(:Technique)`` that enforces uniqueness
+    on **``name`` alone** (MITRE allows duplicate display names across technique IDs; this repo
+    only enforces uniqueness on ``id``).
+
     Incremental (default): rows with ``loaded_to_neo4j = FALSE``.
     Full: LIMIT/OFFSET over all techniques (still updates Snowflake flags).
     """
@@ -131,10 +170,11 @@ def run_attack_techniques_sync(
         batch_size = 1
     db = _resolved_neo4j_database(neo4j_database)
 
-    def ensure_tech_constraint(tx: Any) -> None:
+    def ensure_technique_schema(tx: Any) -> None:
+        _drop_unsafe_technique_name_uniqueness(tx)
         tx.run(_ENSURE_TECHNIQUE_CONSTRAINT)
 
-    _neo4j_write_transaction(ensure_tech_constraint, database=db)
+    _neo4j_write_transaction(ensure_technique_schema, database=db)
 
     total = 0
     batches = 0

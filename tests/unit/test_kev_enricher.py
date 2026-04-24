@@ -4,6 +4,15 @@ from unittest.mock import MagicMock, patch
 
 from ingestion.kev.enricher import _to_stage_row, run_kev_sync
 
+_RESOLVE_RET = {
+    "processed": 0,
+    "batches": 0,
+    "elapsed_sec": 0.0,
+    "errors": [],
+    "error_count": 0,
+}
+_NEO4J_RET = {"cves_updated": 0, "batches": 0, "elapsed_sec": 0.0, "neo4j_database": ""}
+
 
 def _mock_sf_with_cursor(cur: MagicMock) -> MagicMock:
     ctx = MagicMock()
@@ -13,7 +22,9 @@ def _mock_sf_with_cursor(cur: MagicMock) -> MagicMock:
     return sf
 
 
-def test_run_kev_sync_uses_bulk_path_and_logs_summary(caplog):
+@patch("ingestion.kev.pending_resolver.run_resolve_kev_pending", return_value=_RESOLVE_RET)
+@patch("ingestion.graph_sync.kev_neo4j_sync.run_sync_kev_neo4j", return_value=_NEO4J_RET)
+def test_run_kev_sync_uses_bulk_path_and_logs_summary(_mock_neo4j, _mock_resolve, caplog):
     feed = [
         {
             "cveID": "CVE-2024-1234",
@@ -37,11 +48,14 @@ def test_run_kev_sync_uses_bulk_path_and_logs_summary(caplog):
     sqls = [c.args[0] for c in cur.execute.call_args_list]
     assert any("COPY INTO kev_enrichment_staging" in s for s in sqls)
     assert any("MERGE INTO cve_records AS t" in s for s in sqls)
+    assert any("kev_neo4j_dirty = TRUE" in s for s in sqls)
     assert any("MERGE INTO kev_pending_fetch AS q" in s for s in sqls)
     assert "kev_sync_summary" in caplog.text
 
 
-def test_run_kev_sync_fallback_logs_warning(caplog):
+@patch("ingestion.kev.pending_resolver.run_resolve_kev_pending", return_value=_RESOLVE_RET)
+@patch("ingestion.graph_sync.kev_neo4j_sync.run_sync_kev_neo4j", return_value=_NEO4J_RET)
+def test_run_kev_sync_fallback_logs_warning(_mock_neo4j, _mock_resolve, caplog):
     feed = [{"cveID": "CVE-2024-9999", "dateAdded": "2024-01-01"}]
     cur = MagicMock()
     cur.fetchone.return_value = (0, 1)
@@ -65,7 +79,9 @@ def test_run_kev_sync_fallback_logs_warning(caplog):
     assert "kev_sync_fallback" in caplog.text
 
 
-def test_run_kev_sync_dedupes_duplicate_cve_ids():
+@patch("ingestion.kev.pending_resolver.run_resolve_kev_pending", return_value=_RESOLVE_RET)
+@patch("ingestion.graph_sync.kev_neo4j_sync.run_sync_kev_neo4j", return_value=_NEO4J_RET)
+def test_run_kev_sync_dedupes_duplicate_cve_ids(_mock_neo4j, _mock_resolve):
     feed = [
         {"cveID": "CVE-2024-1111", "dateAdded": "2024-01-01"},
         {"cveID": "CVE-2024-1111", "dateAdded": "2024-01-02"},

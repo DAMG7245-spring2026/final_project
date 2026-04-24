@@ -15,12 +15,27 @@ def client():
     return TestClient(create_app())
 
 
-def test_query_stub(client: TestClient):
-    r = client.post("/query", json={"query": "What exploits CVE-2024-1?"})
+@patch("app.routers.query.get_rag_router_service")
+def test_query_stub(mock_get_router, client: TestClient):
+    router = MagicMock()
+    mock_get_router.return_value = router
+    router.answer.return_value = {
+        "answer": "Stub answer for demo.",
+        "route": "text",
+        "route_reasoning": "unit test",
+        "route_was_forced": False,
+        "fallback_triggered": False,
+        "cypher": None,
+        "graph_row_count": None,
+        "graph_results": None,
+        "chunks": [],
+    }
+    r = client.post("/query", json={"question": "What exploits CVE-2024-1?"})
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "pending"
-    assert "Neo4j" in body["message"] or "Advisory" in body["message"]
+    assert body["answer"] == "Stub answer for demo."
+    assert body["route"] == "text"
+    router.answer.assert_called_once()
 
 
 def test_brief_weekly_stub(client: TestClient):

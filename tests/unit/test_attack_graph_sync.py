@@ -6,17 +6,21 @@ import sys
 import types
 from unittest.mock import patch
 
-if "neo4j" not in sys.modules:
-    _neo4j_stub = types.ModuleType("neo4j")
+try:
+    import neo4j as _neo4j_check  # noqa: F401
+    from neo4j.time import Date as _Neo4jDateCheck  # noqa: F401
+except ImportError:
+    if "neo4j" not in sys.modules:
+        _neo4j_stub = types.ModuleType("neo4j")
 
-    class _GraphDatabase:
-        @staticmethod
-        def driver(*_a, **_k):
-            raise RuntimeError("neo4j driver not configured in this test run")
+        class _GraphDatabase:
+            @staticmethod
+            def driver(*_a, **_k):
+                raise RuntimeError("neo4j driver not configured in this test run")
 
-    _neo4j_stub.GraphDatabase = _GraphDatabase
-    _neo4j_stub.Driver = type("Driver", (), {})
-    sys.modules["neo4j"] = _neo4j_stub
+        _neo4j_stub.GraphDatabase = _GraphDatabase
+        _neo4j_stub.Driver = type("Driver", (), {})
+        sys.modules["neo4j"] = _neo4j_stub
 
 from ingestion.graph_sync.attack_techniques_sync import (
     _pairs_from_chunk_row,

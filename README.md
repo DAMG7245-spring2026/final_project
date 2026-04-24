@@ -15,8 +15,10 @@ Idempotent DDL lives in [`snowflake/sql/`](snowflake/sql/). Run in order in a wo
 1. `01_schemas.sql` — drops `CURATED` / `AGENT` / `MONITOR` if present, then `USE SCHEMA PUBLIC`
 2. `02_curated_core.sql` — `cve_records`, CWE/KEV queue, ATT&CK tables in **PUBLIC**
 3. `03_monitor.sql` — `pipeline_runs` in **PUBLIC**
+4. `07_ingestion_monitoring.sql` — `ingestion_checkpoints`, `pipeline_runs` Airflow columns, `cve_records.kev_neo4j_dirty`, extended `kev_pending_fetch` KEV columns
 
-To apply the same DDL from the CLI using `.env` credentials: `poetry run python scripts/push_snowflake_ddl.py`.
+To apply the same DDL from the CLI using `.env` credentials: `poetry run python scripts/push_snowflake_ddl.py`.  
+To apply **only** monitoring objects for Airflow (`ingestion_checkpoints`, `pipeline_runs` columns, etc.) when the rest of the warehouse is already deployed: `poetry run python scripts/apply_ingestion_monitoring.py` (then run the printed `GRANT` statements in Snowflake if the Airflow user gets “not authorized”).
 
 **Environment:** set `SNOWFLAKE_DATABASE=CTI_PLATFORM_DATABASE` and `SNOWFLAKE_SCHEMA=PUBLIC`. Core CTI tables and existing advisory tables (`ADVISORIES`, `ADVISORY_CHUNKS`, `ALEMBIC_VERSION`) live under **PUBLIC**.
 
@@ -63,17 +65,25 @@ poetry run python scripts/nvd_ingest.py sync --start 2024-01-01 --end 2024-01-02
 
 Programmatic use: `from ingestion.nvd.pipeline import sync_delta, sync_single_cve`, `load_curated_file_to_snowflake`, `transform_raw_file_to_curated`, `fetch_delta_to_raw_file`, `ingest_lastmod_month_to_disk_and_snowflake`, `ingest_lastmod_month_to_s3_and_snowflake`.
 
-#### Airflow: NVD three-stage batch (calendar year 2020)
+#### Airflow: structured ingestion and Neo4j
 
-NVD backfill is split into **three manual DAGs** (no calendar schedule on the pipeline itself). Month window **2020-01 … 2020-12** (12 months) is defined in [`airflow/dags/lib/nvd_months.py`](airflow/dags/lib/nvd_months.py) (`NVD_YM_START` / `NVD_YM_END`); widen `NVD_YM_END` there to include more years later. S3 layout: **`s3://$S3_BUCKET/nvd/raw/YYYY-MM.jsonl`** and **`s3://$S3_BUCKET/nvd/curated/YYYY-MM.ndjson`**.
+**NVD S3 batch (historical months):** three manual DAGs. The inclusive month window defaults to **2023-01 … 2023-12** in [`airflow/dags/lib/nvd_months.py`](airflow/dags/lib/nvd_months.py). Override **without editing code** using, in order: environment **`CTI_NVD_YM_START`** / **`CTI_NVD_YM_END`** (`YYYY-MM`), or Airflow Variables **`NVD_BATCH_YM_START`** / **`NVD_BATCH_YM_END`**. S3 layout: **`s3://$S3_BUCKET/nvd/raw/YYYY-MM.jsonl`** and **`s3://$S3_BUCKET/nvd/curated/YYYY-MM.ndjson`**.
 
 | DAG | File | What it does |
 |-----|------|----------------|
-| **`nvd_fetch_dag`** | [`airflow/dags/nvd_fetch_dag.py`](airflow/dags/nvd_fetch_dag.py) | **NVD API → S3 raw only.** Dynamic task mapping: one task per month. On **all successes**, triggers `nvd_transform_dag` with `wait_for_completion=True`. |
-| **`nvd_transform_dag`** | [`airflow/dags/nvd_transform_dag.py`](airflow/dags/nvd_transform_dag.py) | **`schedule=None`.** Lists raw `*.jsonl` under `nvd/raw/`, transforms each to curated on S3 (**no NVD API**). Then triggers `nvd_load_dag` with `wait_for_completion=True`. |
-| **`nvd_load_dag`** | [`airflow/dags/nvd_load_dag.py`](airflow/dags/nvd_load_dag.py) | **`schedule=None`.** Lists `nvd/curated/*.ndjson` in window, **MERGE**s each into **`cve_records`** (batch size **2000**). Safe to re-run without NVD. |
+| **`nvd_fetch_dag`** | [`airflow/dags/nvd_fetch_dag.py`](airflow/dags/nvd_fetch_dag.py) | **NVD API → S3 raw only.** One mapped task per month in the window. Then triggers `nvd_transform_dag` with `wait_for_completion=True`. |
+| **`nvd_transform_dag`** | [`airflow/dags/nvd_transform_dag.py`](airflow/dags/nvd_transform_dag.py) | **`schedule=None`.** Raw `*.jsonl` → curated `*.ndjson` on S3. Then triggers `nvd_load_dag`. |
+| **`nvd_load_dag`** | [`airflow/dags/nvd_load_dag.py`](airflow/dags/nvd_load_dag.py) | **`schedule=None`.** Curated NDJSON → Snowflake **`cve_records`** (MERGE). |
+| **`nvd_incremental_dag`** | [`airflow/dags/nvd_incremental_dag.py`](airflow/dags/nvd_incremental_dag.py) | **NVD API → Snowflake** via `sync_delta` in **sequential** day slices (default **7** days; override with `conf.slice_days`). Each trigger resolves **`start`/`end`** from: optional `conf.force_start` / `force_end`, else **`ingestion_checkpoints`** row `nvd_api_last_modified_through`, else **`DATE(MAX(last_modified))`** from `cve_records`, with **`end`** = today UTC. Advances the checkpoint **after each successful slice**. |
+| **`nvd_s3_slice_pipeline_dag`** | [`airflow/dags/nvd_s3_slice_pipeline_dag.py`](airflow/dags/nvd_s3_slice_pipeline_dag.py) | Same window and **`conf.slice_days`** chunking as **`nvd_incremental_dag`**, with **three chained mapped stages per slice** — **`fetch_slice`** → **`transform_slice`** → **`load_slice`** — to **`{prefix}/raw/slices/…`**, **`{prefix}/curated/slices/…`**, then Snowflake. Slices still run **in parallel within each stage** (same API granularity per fetch). Uses checkpoint **`nvd_s3_slice_pipeline_through`** (not **`nvd_api_last_modified_through`**). Coexists with calendar-month **`nvd_*`** batch DAGs; overlap with **`nvd_incremental_dag`** **MERGE**s safely but repeats NVD API calls. |
+| **`kev_sync_dag`** | [`airflow/dags/kev_sync_dag.py`](airflow/dags/kev_sync_dag.py) | **`fetch_and_enrich` → `resolve_pending` → `sync_kev_neo4j`**: CISA KEV → Snowflake, drain **`kev_pending_fetch`** via **`sync_single_cve`**, then targeted Neo4j **`(:CVE)`** KEV props. |
+| **`cwe_catalog_dag`** | [`airflow/dags/cwe_catalog_dag.py`](airflow/dags/cwe_catalog_dag.py) | Manual bulk CWE load; set **`conf.catalog_path`** or Airflow Variable **`CWE_CATALOG_PATH`**. |
+| **`neo4j_structured_sync_dag`** | [`airflow/dags/neo4j_structured_sync_dag.py`](airflow/dags/neo4j_structured_sync_dag.py) | **`cve_cwe_kev_sync` → `attack_techniques_sync` → `chunk_technique_links_sync`** (full structured graph catch-up using `loaded_to_neo4j`). |
+| **`attack_weekly_dag`** | [`airflow/dags/attack_weekly_dag.py`](airflow/dags/attack_weekly_dag.py) | MITRE ATT&CK full reload into Snowflake (weekly schedule). |
 
-**Flow:** unpause or trigger **`nvd_fetch_dag`** once. It runs fetch tasks, then chains transform and load via **`TriggerDagRunOperator`**. To **re-transform** after a code fix, trigger **`nvd_transform_dag`** only (raw already on S3). To **re-load Snowflake** only, trigger **`nvd_load_dag`**.
+**`pipeline_runs`:** DAG tasks call [`ingestion/monitoring/snowflake_runs.py`](ingestion/monitoring/snowflake_runs.py) (`start_pipeline_run` / `complete_pipeline_run`) for an audit row per logical step (requires **`07_ingestion_monitoring.sql`** applied).
+
+**NVD batch flow:** trigger **`nvd_fetch_dag`** (or transform/load only for replays). **Incremental NVD (direct Snowflake):** trigger **`nvd_incremental_dag`**. **Incremental NVD (S3 + parallel slices):** trigger **`nvd_s3_slice_pipeline_dag`** (optional `conf.prefix`, same `force_start` / `force_end` / `slice_days`). Optional backfill example: `{"force_start": "2024-01-01", "force_end": "2024-01-31"}`.
 
 Install Airflow in a **separate** venv from the app (see [`airflow/requirements.txt`](airflow/requirements.txt)), or use **Docker** (below). On the worker:
 

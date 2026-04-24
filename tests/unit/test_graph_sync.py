@@ -6,19 +6,23 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
-# Importing app.services loads neo4j_service, which requires the neo4j driver.
-# Stub the package when absent so collection works in minimal environments.
-if "neo4j" not in sys.modules:
-    _neo4j_stub = types.ModuleType("neo4j")
+# Stub neo4j only when the driver is not installed; never replace a real package
+# (would break later tests that import neo4j.time via app.services.cti_graph).
+try:
+    import neo4j as _neo4j_check  # noqa: F401
+    from neo4j.time import Date as _Neo4jDateCheck  # noqa: F401
+except ImportError:
+    if "neo4j" not in sys.modules:
+        _neo4j_stub = types.ModuleType("neo4j")
 
-    class _GraphDatabase:
-        @staticmethod
-        def driver(*_a, **_k):
-            raise RuntimeError("neo4j driver not configured in this test run")
+        class _GraphDatabase:
+            @staticmethod
+            def driver(*_a, **_k):
+                raise RuntimeError("neo4j driver not configured in this test run")
 
-    _neo4j_stub.GraphDatabase = _GraphDatabase
-    _neo4j_stub.Driver = type("Driver", (), {})
-    sys.modules["neo4j"] = _neo4j_stub
+        _neo4j_stub.GraphDatabase = _GraphDatabase
+        _neo4j_stub.Driver = type("Driver", (), {})
+        sys.modules["neo4j"] = _neo4j_stub
 
 from ingestion.graph_sync.cve_cwe_kev import (
     _cve_to_neo_row,

@@ -31,10 +31,24 @@ default_args = {
 def run_attack_reload(**context) -> dict:
     ensure_repo_imports()
     from ingestion.attack.pipeline import run_attack_full_reload
+    from ingestion.monitoring.snowflake_runs import complete_pipeline_run, start_pipeline_run
 
-    stats = run_attack_full_reload()
-    context["ti"].log.info("ATT&CK reload stats: %s", stats)
-    return stats
+    dr = context.get("dag_run")
+    rid = start_pipeline_run(
+        dag_id="attack_weekly_dag",
+        source="attack",
+        logical_source="attack_full_reload",
+        airflow_dag_run_id=getattr(dr, "run_id", None),
+        airflow_task_id=context["ti"].task_id,
+    )
+    try:
+        stats = run_attack_full_reload()
+        complete_pipeline_run(rid, status="success", stats=stats)
+        context["ti"].log.info("ATT&CK reload stats: %s", stats)
+        return stats
+    except Exception as exc:
+        complete_pipeline_run(rid, status="failed", error_message=str(exc)[:8000])
+        raise
 
 
 with DAG(

@@ -201,6 +201,8 @@ graph TB
 
 ## User Flow
 
+### NL Query
+
 ```mermaid
 sequenceDiagram
     actor Analyst
@@ -251,6 +253,68 @@ sequenceDiagram
 
     API-->>UI: QueryResponse<br/>{ answer, route, cypher, graph_results, chunks }
     UI->>Analyst: Show answer + supporting evidence
+```
+
+### Weekly Brief
+
+```mermaid
+flowchart TB
+    Start(["Fetch target CVEs<br/>GET /weekly-brief"])
+    Digest["weekly_digest (pure SQL)<br/>tier-ranked top_cves<br/>+ newly_added_kev"]
+    Dedup["Dedup unique CVE IDs<br/>(first-seen wins)"]
+    Fanout{{"Orchestrator<br/>asyncio.Semaphore(8)<br/>fan-out"}}
+
+    Start --> Digest --> Dedup --> Fanout
+
+    subgraph Workers["Parallel AI Agent Workers · up to 8 concurrent"]
+        direction TB
+
+        subgraph W1["CVE Worker #1"]
+            direction TB
+            W1Q["build_graph_question()<br/>build_text_question()"]
+
+            subgraph W1NL["Query Layer A · Natural Language Query"]
+                W1NL1["Text2Cypher LLM<br/>NL → Cypher"]
+                W1NL2["Neo4j graph<br/>rows + answer"]
+                W1NL1 --> W1NL2
+            end
+
+            subgraph W1HS["Query Layer B · Hybrid Search"]
+                W1HS1["BM25<br/>in-memory index"]
+                W1HS2["Cortex Vector<br/>cosine similarity"]
+                W1HS3["RRF fusion α=0.4<br/>top-10 chunks"]
+                W1HS1 --> W1HS3
+                W1HS2 --> W1HS3
+            end
+
+            W1Q --> W1NL
+            W1Q --> W1HS
+
+            W1M["_merge_answers()<br/>→ CveEvidence"]
+            W1NL --> W1M
+            W1HS --> W1M
+        end
+
+        W2["CVE Worker #2<br/>(same structure)"]
+        WN["CVE Worker #N<br/>(same structure)"]
+    end
+
+    Fanout -. dispatch .-> W1
+    Fanout -. dispatch .-> W2
+    Fanout -. dispatch .-> WN
+
+    Gather["asyncio.gather<br/>collect all CveEvidence"]
+    W1 --> Gather
+    W2 --> Gather
+    WN --> Gather
+
+    Synth["Synthesis Agent<br/>single LLM call<br/>SYNTHESIS_SYSTEM_PROMPT"]
+
+    Gather --> Synth
+
+    Out(["Markdown brief<br/>## Headline numbers<br/>## Newly exploited<br/>## Most dangerous active threats"])
+
+    Synth --> Out
 ```
 
 ---

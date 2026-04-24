@@ -25,15 +25,19 @@ def default_api_base() -> str:
     return (os.environ.get("CTI_API_BASE") or "http://127.0.0.1:8000").rstrip("/")
 
 
-def render_api_sidebar() -> str:
-    """Sidebar URL field; returns normalized base URL."""
+def render_api_sidebar(*, show_url_input: bool = True) -> str:
+    """Ensure ``cti_api_base`` in session state; optionally show sidebar URL field.
+
+    Returns normalized base URL (trailing slash stripped).
+    """
     if "cti_api_base" not in st.session_state:
         st.session_state.cti_api_base = default_api_base()
-    st.sidebar.text_input(
-        "API base URL",
-        key="cti_api_base",
-        help="FastAPI root, e.g. http://127.0.0.1:8000. Override with CTI_API_BASE in .env.",
-    )
+    if show_url_input:
+        st.sidebar.text_input(
+            "API base URL",
+            key="cti_api_base",
+            help="FastAPI root, e.g. http://127.0.0.1:8000. Override with CTI_API_BASE in .env.",
+        )
     return str(st.session_state.cti_api_base).rstrip("/")
 
 
@@ -66,22 +70,8 @@ def request_json(
     return r.status_code, data, err
 
 
-def health(base: str) -> tuple[int, Any | None, str]:
-    return request_json("GET", "/health", base=base)
-
-
-def get_cve(base: str, cve_id: str) -> tuple[int, Any | None, str]:
-    return request_json("GET", f"/cve/{cve_id}", base=base)
-
-
-def get_actor(base: str, actor_id: str) -> tuple[int, Any | None, str]:
-    from urllib.parse import quote
-
-    return request_json("GET", f"/actor/{quote(actor_id, safe='')}", base=base)
-
-
-def get_technique(base: str, technique_id: str) -> tuple[int, Any | None, str]:
-    return request_json("GET", f"/technique/{technique_id.strip().upper()}", base=base)
+def get_graph_actors(base: str, *, limit: int = 500) -> tuple[int, Any | None, str]:
+    return request_json("GET", "/graph/actors", base=base, params={"limit": limit})
 
 
 def get_attack_path(

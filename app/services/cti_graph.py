@@ -125,6 +125,27 @@ def actor_exists_cypher(actor_id: str) -> tuple[str, dict[str, Any]]:
     return q, {"id": actor_id}
 
 
+def list_actors_cypher(*, limit: int) -> tuple[str, dict[str, Any]]:
+    """Actors for UI pickers; ``value`` matches ``actor_exists_cypher`` lookup."""
+    q = """
+    MATCH (a:Actor)
+    WITH a,
+      CASE
+        WHEN trim(coalesce(a.name, '')) <> '' THEN trim(a.name)
+        WHEN trim(coalesce(a.actor_id, '')) <> '' THEN trim(a.actor_id)
+        WHEN trim(coalesce(a.id, '')) <> '' THEN trim(a.id)
+        WHEN trim(coalesce(a.external_id, '')) <> '' THEN trim(a.external_id)
+      END AS lookup
+    WHERE lookup IS NOT NULL
+    RETURN lookup AS value,
+           trim(coalesce(a.name, lookup)) AS display_name,
+           trim(coalesce(a.actor_id, a.id, '')) AS actor_id
+    ORDER BY toLower(display_name)
+    LIMIT $limit
+    """
+    return q, {"limit": int(limit)}
+
+
 def actor_detail_cypher(actor_id: str) -> tuple[str, dict[str, Any]]:
     q = """
     MATCH (a:Actor)
@@ -177,6 +198,41 @@ def attack_paths_cypher(
     """
     mh, lim = _clamp_hops_limit(max_hops, limit)
     kind_l = kind.strip().lower()
+    # Technique: undirected var-length + CVE→Technique hops. OPTIONAL MATCH can
+    # return many rows per start; aggregate with collect so we never drop the start
+    # row. Filter bad paths with CASE (not WHERE) so rows ending on :Technique are
+    # nulled out instead of removing the outer row. CVE hop: exclude Deferred only
+    # (no 2015 published_date filter — it hid common REFERENCE edges).
+    if kind_l == "technique":
+        q = f"""
+    MATCH (start:Technique {{id: $val}})
+    OPTIONAL MATCH p_long = (start)-[*1..{mh}]-(e_long)
+    WITH start,
+      CASE
+        WHEN p_long IS NULL THEN null
+        WHEN e_long IS NOT NULL AND e_long:Technique THEN null
+        ELSE p_long
+      END AS p_long_ok
+    WITH start, collect(DISTINCT p_long_ok) AS long_ps
+    OPTIONAL MATCH p_cve = (start)<-[:REFERENCES_TECHNIQUE]-(cve:CVE)
+    WITH start, long_ps, p_cve, cve,
+      CASE
+        WHEN p_cve IS NULL THEN null
+        WHEN coalesce(cve.vuln_status, '') = 'Deferred' THEN null
+        ELSE p_cve
+      END AS p_cve_ok
+    WITH long_ps, collect(DISTINCT p_cve_ok) AS cve_ps
+    WITH [x IN long_ps WHERE x IS NOT NULL] + [x IN cve_ps WHERE x IS NOT NULL] AS raw
+    WITH [p IN raw][0..{lim}] AS limited
+    RETURN [p IN limited | {{
+      nodes: [n IN nodes(p) | {{labels: labels(n), properties: properties(n)}}],
+      rels: [r IN relationships(p) | {{type: type(r), properties: properties(r)}}]
+    }}] AS paths
+    """
+        return q, {"val": value}
+
+    # Directed traversal for CVE/Actor.
+    rel_seg = f"-[*1..{mh}]->"
     if kind_l == "cve":
         start_match = """
         MATCH (start:CVE {id: $val})
@@ -192,9 +248,6 @@ def attack_paths_cypher(
                   AND (n.published_date IS NULL
                        OR date(n.published_date) >= date('2015-01-01'))))
         """
-    elif kind_l == "technique":
-        start_match = "MATCH (start:Technique {id: $val})"
-        path_where = "WHERE NOT end:Technique"
     elif kind_l == "actor":
         start_match = """
         MATCH (start:Actor)
@@ -209,7 +262,7 @@ def attack_paths_cypher(
 
     q = f"""
     {start_match}
-    MATCH p = (start)-[*1..{mh}]->(end)
+    MATCH p = (start){rel_seg}(end)
     {path_where}
     WITH p LIMIT {lim}
     RETURN collect({{

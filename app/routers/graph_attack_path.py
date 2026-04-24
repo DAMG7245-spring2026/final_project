@@ -10,6 +10,7 @@ from app.services import get_neo4j_service
 from app.services.cti_graph import (
     actor_exists_cypher,
     attack_paths_cypher,
+    list_actors_cypher,
     cve_exists_cypher,
     is_valid_cve_id,
     is_valid_technique_id,
@@ -20,6 +21,29 @@ from app.services.cti_graph import (
 )
 
 router = APIRouter(prefix="/graph", tags=["CTI", "Graph"])
+
+
+@router.get(
+    "/actors",
+    summary="List threat actors in the knowledge graph",
+    description="Returns display labels and lookup values suitable for attack-path ``from_actor``.",
+)
+async def list_graph_actors(
+    limit: int = Query(500, ge=1, le=2000),
+) -> dict[str, Any]:
+    neo = get_neo4j_service()
+    q, p = list_actors_cypher(limit=limit)
+    rows = neo.execute_query(q, p)
+    actors = [
+        {
+            "value": neo4j_value_to_json(row.get("value")),
+            "display_name": neo4j_value_to_json(row.get("display_name")),
+            "actor_id": neo4j_value_to_json(row.get("actor_id")),
+        }
+        for row in (rows or [])
+        if row.get("value")
+    ]
+    return {"actors": actors, "count": len(actors)}
 
 
 @router.get(

@@ -8,11 +8,11 @@ from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
-from lib.client import get_attack_path, render_api_sidebar
+from lib.client import get_attack_path, get_graph_actors, render_api_sidebar
 from pyvis.network import Network
 
 # ── constants ────────────────────────────────────────────────────────────────
-_LABEL_PRIORITY = ("CVE", "CWE", "Technique", "Tactic", "Actor", "Malware", "Campaign")
+_LABEL_PRIORITY = ("CVE", "CWE", "Technique", "Tactic", "Actor", "Malware", "Campaign", "Other")
 _PILL_COLORS = {
     "CVE":       "#E24B4A",
     "CWE":       "#378ADD",
@@ -21,6 +21,7 @@ _PILL_COLORS = {
     "Actor":     "#BA7517",
     "Malware":   "#D85A30",
     "Campaign":  "#D4537E",
+    "Other":     "#6B8A9E",
 }
 _DEFAULT_NODE_COLOR = "#888780"
 
@@ -346,6 +347,7 @@ section[data-testid="stMain"] div[data-testid="stIframe"] {
 .ap-pill-Actor     { background: rgba(212,149,42,0.14); color: #f0b84a; border: 1px solid rgba(212,149,42,0.28); }
 .ap-pill-Malware   { background: rgba(224,104,74,0.14); color: #ff9977; border: 1px solid rgba(224,104,74,0.28); }
 .ap-pill-Campaign  { background: rgba(196,84,144,0.14); color: #f090c0; border: 1px solid rgba(196,84,144,0.28); }
+.ap-pill-Other     { background: rgba(107,138,158,0.14); color: #9eb8cc; border: 1px solid rgba(107,138,158,0.32); }
 .ap-pill-default   { background: var(--surface2); color: #c9d1d9; border: 1px solid var(--border2); }
 .ap-rel-arrow {
   color: var(--subtle);
@@ -573,6 +575,12 @@ def _stable_id(props: dict[str, Any], primary: str) -> str:
             v = props.get(k)
             if v is not None and str(v).strip():
                 return str(v).strip()
+        return "_anon"
+    if primary == "Other":
+        name = props.get("name")
+        if name is not None and str(name).strip():
+            return str(name).strip()
+        return "_anon"
     return "_anon"
 
 
@@ -594,7 +602,7 @@ def _pill_text(primary: str, props: dict[str, Any]) -> str:
         name_s = (str(name)[:28] + "…") if len(str(name)) > 28 else str(name)
         base = str(nid or "?")
         return f"{base} · {name_s}" if name_s else base
-    if primary in ("Actor", "Malware", "Campaign"):
+    if primary in ("Actor", "Malware", "Campaign", "Other"):
         return str(props.get("name") or nid or props.get("actor_id") or "?")
     return str(nid or "?")
 
@@ -765,7 +773,7 @@ def _pill_span(primary: str, props: dict[str, Any]) -> str:
     cls = f"ap-pill ap-pill-{primary}" if primary in _LABEL_PRIORITY else "ap-pill ap-pill-default"
     ptype = {"Technique": "T", "CVE": "CVE", "CWE": "CWE",
              "Actor": "Actor", "Malware": "Malware", "Tactic": "Tactic",
-             "Campaign": "Camp"}.get(primary, primary[:5].upper())
+             "Campaign": "Camp", "Other": "Other"}.get(primary, primary[:5].upper())
     return (
         f'<span class="{cls}">'
         f'<span class="ap-pill-type">{html.escape(ptype)}</span>{txt}</span>'
@@ -937,6 +945,26 @@ def _detail_html(start_kind: str, start_value: str, node0: dict[str, Any] | None
     return "".join(parts)
 
 
+def _actor_dropdown_label(row: dict[str, Any]) -> str:
+    dn = str(row.get("display_name") or row.get("value") or "").strip()
+    aid = str(row.get("actor_id") or "").strip()
+    if aid and aid.casefold() != dn.casefold():
+        return f"{dn} ({aid})"
+    return dn or str(row.get("value") or "?")
+
+
+@st.cache_data(ttl=120, show_spinner="Loading actors…")
+def _load_actor_dropdown_options(api_base: str) -> tuple[int, list[dict[str, Any]], str]:
+    code, data, err = get_graph_actors(api_base)
+    if code != 200 or not isinstance(data, dict):
+        return code, [], err or ""
+    raw = data.get("actors")
+    if not isinstance(raw, list):
+        return code, [], err or ""
+    clean = [r for r in raw if isinstance(r, dict) and r.get("value")]
+    return code, clean, ""
+
+
 # ── page ──────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="CTI — Attack Path Explorer", layout="wide")
 
@@ -951,7 +979,7 @@ for k, v in [
         st.session_state[k] = v
 
 _inject_css()
-base = render_api_sidebar()
+base = render_api_sidebar(show_url_input=False)
 
 # ── header ────────────────────────────────────────────────────────────────────
 st.markdown(
@@ -980,11 +1008,41 @@ with st.container(border=True):
         if mode == "CVE":
             from_cve = st.text_input("CVE ID", value="CVE-2024-21413", key="ap_from_cve")
         elif mode == "Actor":
-            from_actor = st.text_input("Actor name", value="", key="ap_from_actor")
+            acode, arows, aerr = _load_actor_dropdown_options(base)
+            if acode == 200 and arows:
+                labels = ["— Select an actor —"] + [_actor_dropdown_label(r) for r in arows]
+
+                def _actor_pick_label(i: int) -> str:
+                    return labels[i]
+
+                pick = st.selectbox(
+                    "Actor",
+                    options=list(range(len(arows) + 1)),
+                    format_func=_actor_pick_label,
+                    index=0,
+                    key="ap_actor_select",
+                )
+                from_actor = "" if pick == 0 else str(arows[pick - 1].get("value") or "").strip()
+            else:
+                hint = f" (HTTP {acode})" if acode != 200 else ""
+                st.caption(f"Could not load actor list{hint}. Enter a name or ID manually.")
+                if aerr:
+                    st.caption(aerr[:280])
+                from_actor = st.text_input(
+                    "Actor name or ID",
+                    value="",
+                    key="ap_from_actor_fallback",
+                )
         else:
             from_technique = st.text_input("Technique ID", value="T1059", key="ap_from_tech")
     with c_hops:
-        max_hops = st.number_input("Max hops", min_value=1, max_value=6, value=3, step=1)
+        max_hops = st.number_input(
+            "Max hops",
+            min_value=1,
+            max_value=6,
+            value=3,
+            step=1,
+        )
     with c_limit:
         limit = st.number_input("Limit", min_value=1, max_value=25, value=10, step=1)
     with c_btn:
@@ -993,17 +1051,44 @@ with st.container(border=True):
 
 # ── fetch ─────────────────────────────────────────────────────────────────────
 if fetch:
+    mh_i, lim_i = int(max_hops), int(limit)
+    # Build exactly one start param from the active tab (session_state covers edge cases
+    # where a widget return value and the submitted value can disagree on the same run).
+    fc = fa = ft = None
+    if mode == "CVE":
+        fc = (st.session_state.get("ap_from_cve") or from_cve or "").strip() or None
+    elif mode == "Actor":
+        fa = (from_actor or "").strip() or None
+    else:
+        ft = (st.session_state.get("ap_from_tech") or from_technique or "").strip() or None
     kwargs: dict[str, Any] = {
-        "from_cve": from_cve.strip() if from_cve else None,
-        "from_actor": from_actor.strip() if from_actor else None,
-        "from_technique": from_technique.strip() if from_technique else None,
-        "max_hops": int(max_hops),
-        "limit": int(limit),
+        "from_cve": fc,
+        "from_actor": fa,
+        "from_technique": ft,
+        "max_hops": mh_i,
+        "limit": lim_i,
     }
     if mode == "Actor" and not kwargs["from_actor"]:
-        st.warning("Enter an actor name or ID.")
+        st.warning("Select an actor from the list, or enter a name or ID if using manual input.")
+        st.session_state.ap_last_code = None
+        st.session_state.ap_last_data = None
+        st.session_state.ap_last_err = ""
+        st.session_state.ap_selected_path = None
+    elif mode == "Technique" and not kwargs["from_technique"]:
+        st.warning("Enter a technique ID (e.g. T1059) before fetching.")
+        st.session_state.ap_last_code = None
+        st.session_state.ap_last_data = None
+        st.session_state.ap_last_err = ""
+        st.session_state.ap_selected_path = None
+    elif mode == "CVE" and not kwargs["from_cve"]:
+        st.warning("Enter a CVE ID before fetching.")
+        st.session_state.ap_last_code = None
+        st.session_state.ap_last_data = None
+        st.session_state.ap_last_err = ""
+        st.session_state.ap_selected_path = None
     else:
-        code, data, err = get_attack_path(base, **kwargs)
+        with st.spinner("Fetching attack paths…"):
+            code, data, err = get_attack_path(base, **kwargs)
         st.session_state.ap_last_code = code
         st.session_state.ap_last_data = data
         st.session_state.ap_last_err = err or ""
@@ -1041,11 +1126,20 @@ else:
     start_value = str(start.get("value") or "")
 
     if path_count == 0:
+        hint = (
+            "Paths walk the graph in <strong>either direction</strong> from the technique, "
+            "but must <strong>end</strong> on a non-Technique node. If this technique is "
+            "isolated or only links to other techniques within the hop limit, try "
+            "<strong>Max hops</strong> or another technique with CVE / actor / malware ties."
+            if start_kind == "technique"
+            else "Try increasing max hops, or verify this node exists in the graph."
+        )
         st.markdown(
             '<div class="ap-no-data" style="margin-top:16px">'
             '<div class="ap-no-data-title">No paths found</div>'
-            'Try increasing max hops, or verify this node exists in the graph.'
-            '</div>',
+            f"<p>Start: <code>{html.escape(start_value)}</code> ({html.escape(start_kind)}).</p>"
+            f"<p>{hint}</p>"
+            "</div>",
             unsafe_allow_html=True,
         )
     else:
@@ -1080,13 +1174,8 @@ else:
         if cur_view == "graph":
             try:
                 components.html(_build_pyvis_html(paths), height=540, scrolling=True)
-                st.caption(
-                    "Nodes: "
-                    + " · ".join(
-                        f'<span style="color:{c}">■</span> {lab}'
-                        for lab, c in _PILL_COLORS.items()
-                    )
-                )
+                legend = " · ".join(f"{lab} ({c})" for lab, c in _PILL_COLORS.items())
+                st.caption(f"Node colors — {legend}")
             except Exception as ex:
                 st.error(f"Graph render error: {ex}")
         else:

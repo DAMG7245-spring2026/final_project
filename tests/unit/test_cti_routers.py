@@ -99,3 +99,40 @@ def test_attack_path_not_found(mock_get_neo, client: TestClient):
     neo.execute_query.return_value = [{"n": 0}]
     r = client.get("/graph/attack-path", params={"from_cve": "CVE-2024-0001"})
     assert r.status_code == 404
+
+
+@patch("app.routers.graph_attack_path.get_neo4j_service")
+def test_list_graph_actors(mock_get_neo, client: TestClient):
+    neo = MagicMock()
+    mock_get_neo.return_value = neo
+    neo.execute_query.return_value = [
+        {"value": "APT28", "display_name": "APT28", "actor_id": "G0007"},
+        {"value": "Lazarus Group", "display_name": "Lazarus Group", "actor_id": ""},
+    ]
+    r = client.get("/graph/actors")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 2
+    assert len(body["actors"]) == 2
+    assert body["actors"][0]["value"] == "APT28"
+    assert body["actors"][0]["actor_id"] == "G0007"
+
+
+def test_attack_paths_cypher_technique_uses_undirected_relationships():
+    from app.services.cti_graph import attack_paths_cypher
+
+    q, p = attack_paths_cypher(kind="technique", value="T1059", max_hops=4, limit=10)
+    assert p == {"val": "T1059"}
+    compact = "".join(q.split())
+    assert "OPTIONALMATCHp_long=(start)-[*1..4]-" in compact
+    assert "REFERENCES_TECHNIQUE" in compact
+    assert "CALL{" not in compact
+
+
+def test_attack_paths_cypher_cve_stays_outgoing():
+    from app.services.cti_graph import attack_paths_cypher
+
+    q, p = attack_paths_cypher(kind="cve", value="CVE-2024-0001", max_hops=3, limit=5)
+    assert p == {"val": "CVE-2024-0001"}
+    compact = "".join(q.split())
+    assert "MATCHp=(start)-[*1..3]->(end)" in compact

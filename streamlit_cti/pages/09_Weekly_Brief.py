@@ -17,6 +17,7 @@ import html as html_lib
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit_cti.theme import inject_global_theme
 
 # Matches CISA advisory IDs wrapped in backticks as emitted by the synthesis
 # prompt (e.g. `aa23-131a`, `ar25-012`). We only linkify the backticked form
@@ -25,6 +26,7 @@ import streamlit.components.v1 as components
 _ADVISORY_ID_BACKTICK_RE = re.compile(r"`([a-z]{2}\d{2}-\d{3}[a-z]?)`", re.IGNORECASE)
 
 st.set_page_config(page_title="CTI — Weekly Brief", layout="wide")
+inject_global_theme()
 
 API_BASE = os.getenv("CTI_API_BASE", "http://localhost:8000")
 

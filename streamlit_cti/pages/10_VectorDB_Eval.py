@@ -25,8 +25,10 @@ from pathlib import Path
 import altair as alt
 import pandas as pd
 import streamlit as st
+from streamlit_cti.theme import inject_global_theme
 
 st.set_page_config(page_title="CTI — VectorDB Eval", layout="wide")
+inject_global_theme()
 
 EVAL_DIR = Path(__file__).resolve().parents[1] / "eval_artifacts"
 REPORT_PATH = EVAL_DIR / "report_prompt.md"

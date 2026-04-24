@@ -2,10 +2,12 @@ import os
 
 import streamlit as st
 import requests
+from streamlit_cti.theme import inject_global_theme
 
 API_BASE = os.getenv("CTI_API_BASE", "http://localhost:8000")
 
 st.set_page_config(page_title="CTI — NL Query", layout="wide")
+inject_global_theme()
 
 st.header("Natural Language Query")
 

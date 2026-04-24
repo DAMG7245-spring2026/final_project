@@ -2,12 +2,14 @@
 
 import streamlit as st
 from lib.client import render_api_sidebar
+from streamlit_cti.theme import inject_global_theme
 
 st.set_page_config(
     page_title="CTI Graph Console",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+inject_global_theme()
 
 render_api_sidebar()
 

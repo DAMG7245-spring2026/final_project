@@ -4,6 +4,85 @@ WE ATTEST THAT WE HAVEN'T USED ANY OTHER STUDENTS' WORK IN OUR ASSIGNMENT AND AB
 * Nisarg Sheth: 33.3%
 * Yu-Tzu Li: 33.3%
 
+---
+
+## CTI Graph Console (application deliverables)
+
+This section records **our team’s application-layer work** in this repository: the FastAPI CTI service extensions, the Streamlit “CTI Graph Console” (Home dashboard, shared theme, Attack Path Explorer), and supporting tests. It is separate from the **Unstructured Advisory Pipeline** section below and is intended to support the final project report.
+
+### FastAPI — operational metrics API
+
+Snowflake-backed read endpoints for the **Scene 1** operational dashboard and other UIs:
+
+| Module | Role |
+|--------|------|
+| [`app/services/metrics.py`](app/services/metrics.py) | Aggregations: CVE totals, KEV counts, `attack_techniques` count, `advisories` count, severity distribution, top KEV rows, recent `pipeline_runs`, freshness (`MAX(completed_at)` per source). |
+| [`app/routers/metrics.py`](app/routers/metrics.py) | HTTP surface for the above. |
+| [`app/main.py`](app/main.py) / [`app/routers/__init__.py`](app/routers/__init__.py) | Router registration. |
+
+**Endpoints (all `GET`, JSON):**
+
+- `/metrics/overview` — `total_cves_ingested`, `kev_flagged`, `attack_techniques_loaded`, `advisories_indexed`
+- `/metrics/severity-distribution` — `{ "items": [ { "severity", "count" }, ... ] }` from `cve_records` (`vuln_status <> 'REJECTED'`)
+- `/metrics/top-kev?limit=5` — latest KEV-added CVEs (same shape as dashboard table)
+- `/metrics/pipeline-runs?limit=10` — last runs from `pipeline_runs` (DAG, source, status, rows, duration, timestamp)
+- `/metrics/freshness` — last `completed_at` keyed as `nvd`, `kev`, `attck` / `mitre_attck`, `neo4j` (from `pipeline_runs.source`)
+
+### Streamlit — Home operational dashboard
+
+| Artifact | Description |
+|----------|-------------|
+| [`streamlit_cti/Home.py`](streamlit_cti/Home.py) | **Scene 1** layout: KPI cards, severity bar chart, top-5 KEV table, pipeline runs table (status styling), freshness tiles; per-panel error handling if an endpoint fails. |
+| [`streamlit_cti/lib/client.py`](streamlit_cti/lib/client.py) | `get_metrics_*` helpers calling the `/metrics/*` routes with the same base URL pattern as other pages. |
+
+### Streamlit — shared theme
+
+| Artifact | Description |
+|----------|-------------|
+| [`streamlit_cti/theme.py`](streamlit_cti/theme.py) | Global CSS tokens (Syne / JetBrains Mono, dark surfaces, inputs, buttons, alerts) injected after `st.set_page_config`. |
+| **Pages wired** | Home, Attack Path, NL Query, Weekly Brief, Vector DB Eval call `inject_global_theme()` after page config. |
+| **Fixes** | Removed a one-shot `session_state` guard that skipped CSS on multipage sidebar navigation (stale “default” UI); adjusted BaseWeb `select` / multiselect styling so Vector Eval multiselects do not show a dark “blob” artifact. |
+
+### Streamlit — Attack Path Explorer
+
+| Topic | Implementation notes |
+|-------|-------------------------|
+| **List / detail correctness** | Detail panel uses a **focus node** derived from path structure (`_focus_node`): CVE-first paths under Technique mode show full **CVSS / KEV** blocks; Actor/Technique starts prefer the **first CVE on the path** when present, with a short “via actor / technique” line. Routing uses **primary Neo4j label**, not only the start-type tab. |
+| **Metrics row** | For CVE start, fourth tile stays **“KEV flagged”** (first node KEV). For Actor/Technique, it becomes **“Paths w/ KEV CVE”** (any KEV-flagged CVE on the path). Path cards reuse the focus node for KEV/severity badges where applicable. |
+| **CVE profile UX** | Per-path actions use `st.button(..., on_click=…)`; selection is clamped to valid indices; **persisted `code == 200` + non-dict `data`** is sanitized so a cold open does not show a phantom error. |
+| **Actor dropdown** | `_load_actors` wrapped in try/except so transport errors do not crash the page. |
+| **Quick picks (pre-fetch)** | When **CVE** mode and no results loaded yet (`ap_last_code is None`), the search panel shows **five “recently added KEV”** cards from `GET /metrics/top-kev` (cached); **“Use this CVE”** sets `st.session_state["ap_from_cve"]` so the CVE field prefills before **Fetch paths**. |
+
+### Airflow — S3, KEV sync, and Neo4j (structured CTI)
+
+Orchestration lives under [`airflow/dags/`](airflow/dags/). The repo [`README.md`](README.md) documents the full DAG set; **for the final report we call out only these three themes** (NVD staging on **S3**, **KEV** sync, and **Neo4j** structured sync).
+
+**S3 — NVD raw / curated staging (`s3://$S3_BUCKET/nvd/...`)**
+
+| DAG | File | Role |
+|-----|------|------|
+| **`nvd_fetch_dag`** | [`airflow/dags/nvd_fetch_dag.py`](airflow/dags/nvd_fetch_dag.py) | NVD API → **S3** raw month files (`*.jsonl`), mapped tasks per month; triggers transform downstream. |
+| **`nvd_transform_dag`** | [`airflow/dags/nvd_transform_dag.py`](airflow/dags/nvd_transform_dag.py) | **S3** raw JSONL → **S3** curated NDJSON per month (`schedule=None`, triggered). |
+| **`nvd_s3_slice_pipeline_dag`** | [`airflow/dags/nvd_s3_slice_pipeline_dag.py`](airflow/dags/nvd_s3_slice_pipeline_dag.py) | Incremental **date-sliced** pipeline: per slice, **fetch → transform → load** with intermediate objects on **S3** (slice prefixes under the bucket) before Snowflake merge; uses checkpoint **`nvd_s3_slice_pipeline_through`**. |
+
+**KEV sync**
+
+| DAG | File | Role |
+|-----|------|------|
+| **`kev_sync_dag`** | [`airflow/dags/kev_sync_dag.py`](airflow/dags/kev_sync_dag.py) | **`fetch_and_enrich`** (CISA KEV → Snowflake **`cve_records`**), **`resolve_pending`** (drain **`kev_pending_fetch`** / NVD backfill), then **`sync_kev_neo4j`** to update **KEV-related properties on existing `(:CVE)` nodes** in Neo4j. |
+
+**Neo4j — structured graph catch-up**
+
+| DAG | File | Role |
+|-----|------|------|
+| **`neo4j_structured_sync_dag`** | [`airflow/dags/neo4j_structured_sync_dag.py`](airflow/dags/neo4j_structured_sync_dag.py) | Snowflake → Neo4j for **structured** CTI entities: **`cve_cwe_kev_sync`**, **`attack_techniques_sync`**, **`chunk_technique_links_sync`**, driven by `loaded_to_neo4j` / graph-sync scripts (separate from the unstructured advisory HTML pipeline). |
+
+### Automated tests (metrics)
+
+- [`tests/unit/test_cti_routers.py`](tests/unit/test_cti_routers.py) — mocked coverage for `/metrics/overview`, `/metrics/severity-distribution`, `/metrics/pipeline-runs` response shapes.
+
+---
+
 # Unstructured Advisory Pipeline
 
 This pipeline ingests **CISA Cybersecurity Advisories** (HTML) and converts them into structured, searchable knowledge — chunks stored in Snowflake with vector embeddings, and knowledge-graph triplets in neo4j.
@@ -27,9 +106,10 @@ This pipeline ingests **CISA Cybersecurity Advisories** (HTML) and converts them
 
 ## Table of Contents
 
-1. [Overview](#overview)
-2. [Architecture](#architecture)
-3. [User Flow](#user-flow)
+1. [CTI Graph Console (application deliverables)](#cti-graph-console-application-deliverables)
+2. [Overview](#overview)
+3. [Architecture](#architecture)
+4. [User Flow](#user-flow)
 5. [Prerequisites](#prerequisites)
 6. [Environment Setup](#environment-setup)
 

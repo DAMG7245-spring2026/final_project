@@ -8,7 +8,12 @@ from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
-from lib.client import get_attack_path, get_graph_actors, render_api_sidebar
+from lib.client import (
+    get_attack_path,
+    get_graph_actors,
+    get_metrics_top_kev,
+    render_api_sidebar,
+)
 from pyvis.network import Network
 from streamlit_cti.theme import inject_global_theme
 
@@ -99,6 +104,11 @@ AP_CSS = """
 .ap-ready { text-align: center; padding: 56px 24px; color: var(--muted); }
 .ap-ready-title { font-size: 18px; font-weight: 700; font-family: var(--display); color: var(--text); margin-bottom: 8px; }
 .ap-ready-sub { font-size: 13px; font-family: var(--mono); }
+.ap-quick-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.ap-quick-title { font-size: 11px; font-weight: 600; color: var(--muted); font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; }
+.ap-quick-card { background: var(--surface2); border: 1px solid var(--border2); border-radius: 10px; padding: 10px 12px; margin-bottom: 6px; }
+.ap-quick-cve { font-family: var(--mono); font-size: 13px; font-weight: 600; color: #ff8b82; margin-bottom: 4px; }
+.ap-quick-vendor { font-size: 10px; color: var(--muted); font-family: var(--mono); line-height: 1.35; }
 </style>
 """
 
@@ -120,6 +130,10 @@ def _init_state() -> None:
 def _on_profile_click(idx: int) -> None:
     st.session_state.ap_selected_path = int(idx)
     st.session_state.ap_detail_visible = True
+
+
+def _on_quick_pick_cve(cve_id: str) -> None:
+    st.session_state["ap_from_cve"] = str(cve_id).strip().upper()
 
 
 def _reset_results() -> None:
@@ -456,6 +470,18 @@ def _actor_label(row: dict[str, Any]) -> str:
     return f"{dn} ({aid})" if aid and aid.casefold() != dn.casefold() else dn or "?"
 
 
+@st.cache_data(ttl=120, show_spinner="Loading KEV quick picks…")
+def _load_top_kev_quick_picks(api_base: str) -> tuple[int, list[dict[str, Any]], str]:
+    code, data, err = get_metrics_top_kev(api_base, limit=5)
+    if code != 200 or not isinstance(data, dict):
+        return code, [], err or ""
+    raw = data.get("items")
+    if not isinstance(raw, list):
+        return code, [], err or ""
+    rows = [r for r in raw if isinstance(r, dict) and r.get("cve_id")]
+    return code, rows[:5], err or ""
+
+
 @st.cache_data(ttl=120, show_spinner="Loading actors…")
 def _load_actors(api_base: str) -> tuple[int, list[dict[str, Any]], str]:
     try:
@@ -522,6 +548,42 @@ with st.container(border=True):
     with c_btn:
         st.write("")
         fetch = st.button("Fetch paths", type="primary", use_container_width=True)
+
+    # Same KEV list as the Home dashboard — only before any successful load.
+    if mode == "CVE" and st.session_state.get("ap_last_code") is None:
+        st.markdown(
+            '<div class="ap-quick-section">'
+            '<div class="ap-quick-title">Recently added KEV — click a CVE, then Fetch paths</div></div>',
+            unsafe_allow_html=True,
+        )
+        qcode, qrows, qerr = _load_top_kev_quick_picks(base)
+        if qcode != 200:
+            st.caption(
+                f"Quick picks unavailable (HTTP {qcode}). "
+                f"{(qerr or '')[:160]}"
+            )
+        elif not qrows:
+            st.caption("No KEV CVE rows returned yet. Enter a CVE ID above.")
+        else:
+            qcols = st.columns(len(qrows))
+            for i, row in enumerate(qrows):
+                cid = str(row.get("cve_id") or "").strip().upper()
+                ven = str(row.get("vendor") or "").strip()
+                ven_disp = html.escape((ven[:36] + "…") if len(ven) > 36 else ven)
+                with qcols[i]:
+                    st.markdown(
+                        f'<div class="ap-quick-card">'
+                        f'<div class="ap-quick-cve">{html.escape(cid)}</div>'
+                        f'<div class="ap-quick-vendor">{ven_disp or "—"}</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.button(
+                        "Use this CVE",
+                        key=f"ap_quick_use_{i}",
+                        on_click=_on_quick_pick_cve,
+                        args=(cid,),
+                        use_container_width=True,
+                    )
 
 # ── fetch ─────────────────────────────────────────────────────────────────────
 if fetch:

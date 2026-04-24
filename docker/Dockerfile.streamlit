@@ -16,6 +16,7 @@ RUN poetry install --only main --no-interaction --no-ansi --no-root
 
 COPY streamlit_cti/ ./streamlit_cti/
 
+ENV PYTHONPATH=/app
 ENV CTI_API_BASE=http://api:8000
 
 EXPOSE 8501

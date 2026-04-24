@@ -177,6 +177,223 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# -- Structured data brief --------------------------------------------------
+st.markdown('<div class="home-section-title">Structured Data Sources</div>', unsafe_allow_html=True)
+st.markdown(
+    """
+<style>
+.src-card {
+  background: linear-gradient(180deg, var(--surface2) 0%, var(--surface) 100%);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  padding: 0.9rem 1rem;
+  height: 100%;
+}
+.src-card h4 {
+  margin: 0 0 0.2rem 0;
+  font-size: 1rem;
+  color: var(--text);
+}
+.src-card .src-table {
+  margin: 0.1rem 0 0.6rem 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.src-card ul {
+  margin: 0;
+  padding-left: 1rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--text);
+  line-height: 1.45;
+}
+.src-card ul li { margin: 0.05rem 0; }
+.src-card .src-sub {
+  margin-top: 0.55rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+src_c1, src_c2, src_c3 = st.columns(3)
+src_c1.markdown(
+    """
+<div class="src-card">
+  <h4>CVE (NVD)</h4>
+  <div class="src-table">cve_records · cve_cwe_mappings · cwe_records</div>
+  <ul>
+    <li>cve_id, published_date, last_modified, vuln_status</li>
+    <li>description_en</li>
+    <li>cvss_version, cvss_score, cvss_severity</li>
+    <li>attack_vector, attack_complexity, privileges_required, user_interaction, scope</li>
+    <li>confidentiality_impact, integrity_impact</li>
+    <li>exploitability_score, impact_score</li>
+    <li>cwe_ids, cpe_matches, has_exploit_ref, raw_json</li>
+  </ul>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+src_c2.markdown(
+    """
+<div class="src-card">
+  <h4>KEV (CISA)</h4>
+  <div class="src-table">cve_records (is_kev = TRUE) · kev_pending_fetch</div>
+  <ul>
+    <li>is_kev</li>
+    <li>kev_date_added, kev_due_date</li>
+    <li>kev_vendor_project, kev_product</li>
+    <li>kev_ransomware_use</li>
+    <li>kev_required_action</li>
+  </ul>
+  <div class="src-sub">Queue: cve_id, kev_date_added, queued_at, fetched</div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+src_c3.markdown(
+    """
+<div class="src-card">
+  <h4>MITRE ATT&amp;CK</h4>
+  <div class="src-table">attack_techniques · _tactics · _actors · _mitigations · _campaigns · _relationships</div>
+  <ul>
+    <li>techniques: mitre_id, stix_id, name, tactic, platforms, is_subtechnique, parent_id, mitre_version</li>
+    <li>tactics: tactic_id, name, shortname, tactic_order</li>
+    <li>actors: actor_name, external_id, aliases, country, motivation, target_sectors</li>
+    <li>mitigations: mitigation_id, name, description</li>
+    <li>campaigns: campaign_id, external_id, name, description</li>
+    <li>relationships: source/target stix_id · name · type · relation_type</li>
+  </ul>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+# -- Unstructured data brief ------------------------------------------------
+st.markdown('<div class="home-section-title">Unstructured Data Sources — CISA Advisory Document Types</div>', unsafe_allow_html=True)
+
+ud_r1c1, ud_r1c2, ud_r1c3 = st.columns(3)
+ud_r1c1.markdown(
+    """
+<div class="src-card">
+  <h4>MAR</h4>
+  <div class="src-table">Malware Analysis Report · 1400t · h3/h4</div>
+  <ul>
+    <li>Executive / Malware Summary</li>
+    <li>Findings (per-hash h4 sub-blocks)</li>
+    <li>YARA / Sigma Rules</li>
+    <li>Recommendations / Mitigations</li>
+    <li>MITRE ATT&amp;CK Techniques</li>
+    <li>Relationship Summary</li>
+  </ul>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+ud_r1c2.markdown(
+    """
+<div class="src-card">
+  <h4>ANALYSIS_REPORT</h4>
+  <div class="src-table">Technical Analysis · 1200t · h2/h3</div>
+  <ul>
+    <li>Executive Summary / Introduction / Malware Summary</li>
+    <li>Malware Metadata</li>
+    <li>Malware Delivery</li>
+    <li>Malware Functionality (Initiation / Persistence / C2)</li>
+    <li>Detection (YARA / Sigma)</li>
+    <li>Mitigations / Incident Response</li>
+    <li>MITRE ATT&amp;CK Techniques</li>
+    <li>Appendix</li>
+  </ul>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+ud_r1c3.markdown(
+    """
+<div class="src-card">
+  <h4>JOINT_CSA</h4>
+  <div class="src-table">Multi-agency Advisory · 1000t · h2/h3</div>
+  <ul>
+    <li>Summary / Executive Summary</li>
+    <li>Background / Threat Actor Activity</li>
+    <li>Technical Details (ATT&amp;CK kill chain)</li>
+    <li>Indicators of Compromise (IoC)</li>
+    <li>MITRE ATT&amp;CK Techniques</li>
+    <li>Detection / Mitigations / Incident Response</li>
+    <li>Resources / References</li>
+  </ul>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+ud_r2c1, ud_r2c2, ud_r2c3 = st.columns(3)
+ud_r2c1.markdown(
+    """
+<div class="src-card">
+  <h4>STOPRANSOMWARE</h4>
+  <div class="src-table">#StopRansomware series · 1000t · h2/h3</div>
+  <ul>
+    <li>Summary / Executive Summary</li>
+    <li>Background / Threat Actor Activity</li>
+    <li>Technical Details</li>
+    <li>Indicators of Compromise (IoC)</li>
+    <li>MITRE ATT&amp;CK Techniques</li>
+    <li>Detection / Mitigations / Incident Response</li>
+    <li>Ransomware TTPs · Affiliates · Payment / Leak Sites</li>
+    <li>Resources / References</li>
+  </ul>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+ud_r2c2.markdown(
+    """
+<div class="src-card">
+  <h4>IR_LESSONS</h4>
+  <div class="src-table">Incident Response Lessons · 700t · h2/h3</div>
+  <ul>
+    <li>Summary</li>
+    <li>Background / Engagement Overview</li>
+    <li>Timeline / Key Events</li>
+    <li>Key Findings / Noted Strengths</li>
+    <li>Lessons Learned</li>
+    <li>Mitigations / Recommendations</li>
+    <li>MITRE ATT&amp;CK Techniques</li>
+  </ul>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+ud_r2c3.markdown(
+    """
+<div class="src-card">
+  <h4>CSA</h4>
+  <div class="src-table">Single-agency Advisory · 1000t · auto/h3</div>
+  <ul>
+    <li>Summary</li>
+    <li>Background</li>
+    <li>Technical Details</li>
+    <li>Indicators of Compromise (IoC)</li>
+    <li>MITRE ATT&amp;CK Techniques</li>
+    <li>Detection / Mitigations</li>
+    <li>Resources / References</li>
+  </ul>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
 # -- Top: KPI cards ---------------------------------------------------------
 st.markdown('<div class="home-section-title">Platform Health At A Glance</div>', unsafe_allow_html=True)
 s_overview, d_overview, e_overview = get_metrics_overview(base)

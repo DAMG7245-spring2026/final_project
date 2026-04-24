@@ -6,6 +6,7 @@ from .cve import router as cve_router
 from .graph_attack_path import router as graph_attack_path_router
 from .health import router as health_router
 from .hybrid_search import router as hybrid_search_router
+from .metrics import router as metrics_router
 from .query import router as query_router
 from .technique import router as technique_router
 from .vector_search import router as vector_search_router
@@ -21,6 +22,7 @@ __all__ = [
     "graph_attack_path_router",
     "health_router",
     "hybrid_search_router",
+    "metrics_router",
     "query_router",
     "technique_router",
     "vector_search_router",

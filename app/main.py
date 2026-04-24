@@ -14,6 +14,7 @@ from app.routers import (
     graph_query_router,
     health_router,
     hybrid_search_router,
+    metrics_router,
     query_router,
     technique_router,
     vector_search_router,
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(vector_search_router)
     app.include_router(hybrid_search_router)
     app.include_router(graph_query_router)
+    app.include_router(metrics_router)
     app.include_router(weekly_digest_router)
     app.include_router(weekly_brief_router)
     app.include_router(advisory_router)

@@ -118,6 +118,51 @@ def test_list_graph_actors(mock_get_neo, client: TestClient):
     assert body["actors"][0]["actor_id"] == "G0007"
 
 
+@patch("app.routers.metrics.overview_counts")
+def test_metrics_overview(mock_overview, client: TestClient):
+    mock_overview.return_value = {
+        "total_cves_ingested": 1200,
+        "kev_flagged": 95,
+        "attack_techniques_loaded": 312,
+        "advisories_indexed": 410,
+    }
+    r = client.get("/metrics/overview")
+    assert r.status_code == 200
+    assert r.json()["kev_flagged"] == 95
+
+
+@patch("app.routers.metrics.severity_distribution")
+def test_metrics_severity_distribution(mock_severity, client: TestClient):
+    mock_severity.return_value = [
+        {"severity": "CRITICAL", "count": 11},
+        {"severity": "HIGH", "count": 20},
+    ]
+    r = client.get("/metrics/severity-distribution")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["items"]) == 2
+    assert body["items"][0]["severity"] == "CRITICAL"
+
+
+@patch("app.routers.metrics.recent_pipeline_runs")
+def test_metrics_pipeline_runs(mock_runs, client: TestClient):
+    mock_runs.return_value = [
+        {
+            "dag": "nvd_ingest",
+            "source": "nvd",
+            "status": "success",
+            "rows_processed": 450,
+            "duration_seconds": 22,
+            "timestamp": "2026-04-24T00:00:00",
+        }
+    ]
+    r = client.get("/metrics/pipeline-runs", params={"limit": 10})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["limit"] == 10
+    assert body["items"][0]["source"] == "nvd"
+
+
 def test_attack_paths_cypher_technique_uses_undirected_relationships():
     from app.services.cti_graph import attack_paths_cypher
 

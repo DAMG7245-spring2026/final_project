@@ -109,3 +109,27 @@ def post_query(base: str, query: str) -> tuple[int, Any | None, str]:
 
 def get_weekly_brief(base: str) -> tuple[int, Any | None, str]:
     return request_json("GET", "/brief/weekly", base=base)
+
+
+def get_metrics_overview(base: str) -> tuple[int, Any | None, str]:
+    return request_json("GET", "/metrics/overview", base=base)
+
+
+def get_metrics_severity_distribution(base: str) -> tuple[int, Any | None, str]:
+    return request_json("GET", "/metrics/severity-distribution", base=base)
+
+
+def get_metrics_top_kev(base: str, *, limit: int = 5) -> tuple[int, Any | None, str]:
+    return request_json("GET", "/metrics/top-kev", base=base, params={"limit": limit})
+
+
+def get_metrics_pipeline_runs(
+    base: str, *, limit: int = 10
+) -> tuple[int, Any | None, str]:
+    return request_json(
+        "GET", "/metrics/pipeline-runs", base=base, params={"limit": limit}
+    )
+
+
+def get_metrics_freshness(base: str) -> tuple[int, Any | None, str]:
+    return request_json("GET", "/metrics/freshness", base=base)

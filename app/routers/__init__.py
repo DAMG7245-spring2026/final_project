@@ -1,5 +1,6 @@
 """Routers package - API endpoint routers."""
 from .actor import router as actor_router
+from .advisory import router as advisory_router
 from .brief import router as brief_router
 from .cve import router as cve_router
 from .graph_attack_path import router as graph_attack_path_router
@@ -14,6 +15,7 @@ from .weekly_digest import router as weekly_digest_router
 
 __all__ = [
     "actor_router",
+    "advisory_router",
     "brief_router",
     "cve_router",
     "graph_attack_path_router",

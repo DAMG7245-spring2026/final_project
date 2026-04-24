@@ -55,7 +55,7 @@ log = structlog.get_logger(__name__)
 
 MAX_CONCURRENT_WORKERS = 8
 RAG_FORCE_ROUTE = "both"  # always run graph + text for the CVE full-picture query
-SYNTHESIS_MAX_TOKENS = 4000
+SYNTHESIS_MAX_TOKENS = 8000
 SYNTHESIS_TEMPERATURE = 0.2  # a touch of variance for prose; numbers are grounded by the evidence pack
 
 
@@ -78,12 +78,17 @@ order and with these exact headings:
 ## Headline numbers
 A small markdown table of the six counts (total_modified, newly_published,
 critical_count, kev_added_count, kev_ransomware_count, has_exploit_ref_count).
-Follow with a 3-5 sentence narrative paragraph that:
+Follow with a 5-8 sentence narrative paragraph that:
 - Characterises the week's activity level relative to the numbers
   (e.g. "elevated KEV churn", "quiet week outside of X").
-- Calls out any cross-CVE pattern visible in the top / newly-added
+- Names the dominant vendors / products of the week and how many CVEs
+  each contributed to the top / newly-added lists.
+- Calls out every cross-CVE pattern visible in the top / newly-added
   lists (shared vendor, shared exploitation vector, same actor, same
-  ransomware campaign, CISA Emergency Directive in play, etc.).
+  ransomware campaign, CISA Emergency Directive in play, etc.) — if
+  multiple patterns exist, mention each one briefly.
+- Surfaces any recurring threat actor, ransomware gang, or malware
+  family that appears across **two or more** CVE evidence blocks.
 - Ends with the one headline a CISO would want on a Monday-morning
   executive summary email.
 
@@ -92,23 +97,34 @@ Iterate over every CVE in the "## Newly added KEV this week" input
 block, **in the same order**, and write **one paragraph per CVE** (no
 merging two different CVE IDs into a single paragraph, even if they
 share vendor or advisory — separate paragraphs). Each paragraph is
-4-7 sentences:
+6-10 sentences:
 - Bold the CVE ID on first mention.
 - Lead with vendor / product and kev_date_added. State the vulnerability
   class in plain English (e.g. "authentication bypass", "path traversal
-  leading to RCE").
-- Name threat actors, ransomware gangs, malware families, or campaigns
-  **whenever the RAG evidence provides them**. Cite advisory IDs in
-  parentheses the way the evidence does (e.g. "per `aa23-131a`").
-- If kev_ransomware_use = 'Known', say so explicitly and link to the
-  named ransomware group if evidence provides one.
-- Include at least one concrete detection signal or IoC from the
-  evidence when available (a process-tree observation, suspicious
-  domain / IP / email, a Suricata signature hint, an EDR rule).
-- Close with an actionable mitigation hint grounded in
-  kev_required_action plus evidence detail (patch version, port to
-  block, MFA requirement, workaround). "Apply patches" alone is not
-  acceptable — tie it to what the advisory actually recommends.
+  leading to RCE") and include the CVSS vector breakdown (attack vector,
+  privileges required, user interaction, scope, CIA impact) when the
+  structured fields or evidence provide it.
+- List **every** named threat actor, ransomware gang, malware family,
+  C2 framework, and campaign the RAG evidence mentions — do not
+  cherry-pick one when several are present. Cite **all** advisory IDs
+  the evidence references in parentheses (e.g. "per `aa23-131a`,
+  `aa24-060a`"), not just the first one.
+- If kev_ransomware_use = 'Known', say so explicitly and link to every
+  named ransomware group, affiliate, or RaaS operator the evidence
+  provides. If the evidence ties the CVE to a specific ransomware
+  campaign timeline (initial access, mass exploitation window), include
+  those dates.
+- Include **at least two distinct** detection signals or IoCs from the
+  evidence when available: process-tree observations, suspicious
+  domains / IPs / emails, Suricata / YARA / Sigma rule hints, EDR rules,
+  file hashes, log-line patterns, or network-traffic signatures. Group
+  them by type (e.g. "Network: ...; Host: ...").
+- Close with **two or more** actionable mitigation or hardening steps
+  grounded in kev_required_action plus evidence detail (specific patch
+  version / KB, port or protocol to block, MFA or segmentation
+  requirement, configuration hardening, compensating control, WAF rule).
+  "Apply patches" alone is not acceptable — tie each step to what the
+  advisory or evidence actually recommends.
 - If the same CVE ID is also in ``overlap_ids`` (shown in the input
   header), merge both the newly-added and Tier-1 angles into this one
   paragraph and note the dual significance. That CVE will then be
@@ -121,16 +137,24 @@ Iterate over every CVE in the "## Top CVEs (danger-ranked)" input block,
   **SKIP it** — it has already been covered in the newly-exploited
   section above. Do not restate.
 - If its CVE ID is **NOT in ``overlap_ids``**, write **one paragraph**
-  of 3-5 sentences (shorter than newly-exploited, but never a one-liner
-  and never merge two CVE IDs into one paragraph):
+  of 5-8 sentences (never a one-liner, and never merge two CVE IDs
+  into one paragraph):
   * Bold the CVE ID.
-  * State cvss_score, kev_date_added, and ransomware status up front.
-  * Include at least one evidence-grounded specific: a named actor /
-    campaign if RAG evidence has one, or a concrete exploitation
-    technique if it does not (e.g. "privilege escalation via PIE binary
-    address allocation flaw").
-  * Cite any advisory ID(s) the evidence references.
-  * End with one mitigation or detection pointer.
+  * State cvss_score, exploitability_score, impact_score, kev_date_added,
+    and ransomware status up front. Briefly explain what the score
+    combination implies (e.g. "high impact but low exploitability —
+    urgent patch window, limited mass-exploitation risk").
+  * List **every** named actor, campaign, malware family, or C2 framework
+    the RAG evidence provides. When the evidence has none, describe the
+    concrete exploitation technique in detail (root cause, primitive
+    gained, prerequisites) — e.g. "privilege escalation via PIE binary
+    address allocation flaw enabling arbitrary RIP control".
+  * Cite **every** advisory ID the evidence references, not just one.
+  * Include at least one concrete IoC or detection signal when the
+    evidence provides it.
+  * End with **at least two** mitigation or detection pointers grounded
+    in the evidence (patch version, configuration hardening, network
+    control, detection rule) — not generic "apply patches" advice.
 
 A top CVE must appear in **exactly one** of the two CVE sections — in
 newly-exploited if it is in ``overlap_ids``, otherwise here. **Never
@@ -225,6 +249,7 @@ class CveEvidence(BaseModel):
     graph_cypher: str | None = None
     graph_row_count: int = 0
     chunk_count: int = 0
+    advisory_ids: list[str] = []
     route: str = RAG_FORCE_ROUTE
     route_reasoning: str | None = None
     fallback_triggered: bool = False
@@ -283,6 +308,11 @@ def _invoke_rag(cve: WeeklyCve) -> CveEvidence:
 
     graph_answer = graph.get("answer")
     merged = _merge_answers(graph_answer, chunks)
+    seen_adv: dict[str, None] = {}
+    for c in chunks:
+        aid = c.get("advisory_id")
+        if aid and aid not in seen_adv:
+            seen_adv[aid] = None
     return CveEvidence(
         cve=cve,
         question=f"[graph] {graph_q}\n[text] {text_q}",
@@ -292,6 +322,7 @@ def _invoke_rag(cve: WeeklyCve) -> CveEvidence:
         graph_cypher=graph.get("cypher"),
         graph_row_count=int(graph.get("row_count") or 0),
         chunk_count=len(chunks),
+        advisory_ids=list(seen_adv.keys()),
         route="both",
         route_reasoning="bypassed rag_router — split graph/text questions",
         fallback_triggered=False,

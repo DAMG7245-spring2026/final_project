@@ -7,6 +7,7 @@ from app.config import get_settings
 from app.logging_config import configure_logging, get_logger
 from app.routers import (
     actor_router,
+    advisory_router,
     brief_router,
     cve_router,
     graph_attack_path_router,
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(graph_query_router)
     app.include_router(weekly_digest_router)
     app.include_router(weekly_brief_router)
+    app.include_router(advisory_router)
 
     # Global exception handler
     @app.exception_handler(Exception)

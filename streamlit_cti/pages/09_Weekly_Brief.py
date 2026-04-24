@@ -9,10 +9,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date, timedelta
+
+import html as html_lib
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
+
+# Matches CISA advisory IDs wrapped in backticks as emitted by the synthesis
+# prompt (e.g. `aa23-131a`, `ar25-012`). We only linkify the backticked form
+# so we never accidentally rewrite free-standing IDs inside existing markdown
+# links or code blocks.
+_ADVISORY_ID_BACKTICK_RE = re.compile(r"`([a-z]{2}\d{2}-\d{3}[a-z]?)`", re.IGNORECASE)
 
 st.set_page_config(page_title="CTI — Weekly Brief", layout="wide")
 
@@ -21,18 +31,8 @@ API_BASE = os.getenv("CTI_API_BASE", "http://localhost:8000")
 st.header("Weekly CVE Threat-Intel Brief")
 st.caption(f"Backend: `{API_BASE}/weekly-brief/stream`")
 
-with st.expander("CVE retrieval strategy (Ranking)", expanded=False):
-    st.markdown(
-        """
-**Sources**: NVD (CVE master + CVSS) + CISA KEV (actively exploited list).
-Synced weekly by Airflow into Snowflake `cve_records`. Ranking is pure SQL —
-the LLM is not involved in ordering.
-
-**Window**: `window_start` / `window_end` in the sidebar (half-open interval).
-Defaults to the last 7 days.
-
-**Tier rules** (lower is more dangerous; anything above `max_tier` is excluded):
-
+st.markdown(
+    """
 | Tier | Condition | Meaning |
 |---|---|---|
 | 1 | `is_kev = TRUE` AND `kev_ransomware_use = 'Known'` | Actively used by ransomware |
@@ -40,23 +40,8 @@ Defaults to the last 7 days.
 | 3 | `has_exploit_ref = TRUE` AND `cvss_score >= 9.0` | Critical CVE with public exploit |
 | 4 | `cvss_severity = 'CRITICAL'` AND `confidentiality_impact = 'HIGH'` | Worst-case severity |
 | 5 | Everything else (excluded by default via `max_tier=4`) | Long-tail noise |
-
-**Intra-tier ordering**: `tier ↑` → `kev_date_added ↓` (fresh KEVs bubble up) →
-`cvss_score ↓` → `exploitability_score ↓` → `impact_score ↓` →
-`last_modified ↓`.
-
-**Two independent slices**:
-- `top_cves` (Top-N limit): the N most dangerous CVEs this week.
-- `newly_added_kev` (separate SQL, so it isn't crowded out by the Tier 1 pool):
-  the M new KEV entries this week.
-
-The two sets can overlap; the orchestrator dedupes (first-seen-wins) before
-the RAG fan-out, and the synthesizer uses `overlap_ids` to avoid describing
-the same CVE twice in the markdown.
-
-Full design: `doc/WEEKLY_BRIEF_DESIGN.md`, section 5.
-        """
-    )
+"""
+)
 
 with st.sidebar:
     st.subheader("Window")
@@ -160,19 +145,18 @@ def _render_cve_expander(cve: dict, evidence_by_id: dict[str, dict]) -> None:
             )
 
         ev = evidence_by_id.get(cve_id)
-        if ev:
-            st.markdown("---")
-            st.markdown("**RAG evidence**")
-            st.caption(
-                f"route={ev.get('route')} · graph_rows={ev.get('graph_row_count', 0)} · "
-                f"chunks={ev.get('chunk_count', 0)}"
-            )
-            if ev.get("rag_answer"):
+        # Only show the Evidence paragraph when the graph retriever actually
+        # returned rows — otherwise the paragraph is just advisory-chunk
+        # noise, which we already strip below.
+        if ev and (ev.get("graph_row_count") or 0) > 0 and ev.get("rag_answer"):
+            # Drop the "## Advisory passages" section — raw chunk text is
+            # noisy and the referenced advisories are already available as
+            # expandable HTML at the bottom of the page.
+            paragraph = ev["rag_answer"].split("## Advisory passages", 1)[0].rstrip()
+            if paragraph:
+                st.markdown("---")
                 with st.expander("Evidence paragraph", expanded=False):
-                    st.markdown(ev["rag_answer"])
-            if ev.get("graph_cypher"):
-                with st.expander("Generated Cypher", expanded=False):
-                    st.code(ev["graph_cypher"], language="cypher")
+                    st.markdown(paragraph)
 
 
 # ---- session state --------------------------------------------------------
@@ -183,9 +167,73 @@ for key, default in [
     ("markdown_final", ""),
     ("done_info", None),
     ("error", None),
+    ("advisory_url_by_id", {}),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+
+@st.cache_data(show_spinner=False)
+def _fetch_advisory_html(advisory_id: str) -> str | None:
+    try:
+        r = requests.get(f"{API_BASE}/advisory/{advisory_id}/html", timeout=30)
+        if r.status_code == 200:
+            return r.text
+    except requests.RequestException:
+        pass
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def _fetch_advisories_by_cves(cve_ids: tuple[str, ...]) -> list[dict]:
+    """Ask the backend which advisories mention any of these CVEs.
+
+    Hits ``POST /advisory/by-cves`` which joins against the Snowflake
+    ``advisories.cve_ids_mentioned`` column. Cached by the tuple of CVE IDs.
+    """
+    if not cve_ids:
+        return []
+    try:
+        r = requests.post(
+            f"{API_BASE}/advisory/by-cves",
+            json={"cve_ids": list(cve_ids)},
+            timeout=30,
+        )
+        if r.status_code == 200:
+            return r.json()
+    except requests.RequestException:
+        pass
+    return []
+
+
+def _build_advisory_url_lookup(advisories: list[dict]) -> dict[str, str]:
+    """Lowercased advisory_id → link URL. Prefer the CISA source URL; fall
+    back to our own ``/advisory/{id}/html`` endpoint so unresolvable IDs
+    still have somewhere to click through to."""
+    lookup: dict[str, str] = {}
+    for a in advisories:
+        aid = a.get("advisory_id")
+        if not aid:
+            continue
+        url = a.get("url") or f"{API_BASE}/advisory/{aid}/html"
+        lookup[aid.lower()] = url
+    return lookup
+
+
+def _linkify_advisory_ids(md: str, url_by_aid: dict[str, str]) -> str:
+    """Replace `` `aa23-131a` `` with ``[`aa23-131a`](url)`` when we have a
+    URL for that advisory. Case preserved in the visible text."""
+    if not md or not url_by_aid:
+        return md
+
+    def repl(m: "re.Match[str]") -> str:
+        aid_literal = m.group(1)
+        url = url_by_aid.get(aid_literal.lower())
+        if not url:
+            return m.group(0)
+        return f"[`{aid_literal}`]({url})"
+
+    return _ADVISORY_ID_BACKTICK_RE.sub(repl, md)
 
 
 run = st.button("Fetch brief (stream)", type="primary")
@@ -245,6 +293,18 @@ if run:
                         st.session_state.cves_data = json.loads(data)
                     except json.JSONDecodeError:
                         st.session_state.cves_data = None
+                    # Pre-fetch the advisory URL lookup now — the `cves` event
+                    # carries every CVE ID we need, and having the map ready
+                    # lets us linkify the markdown in a single pass after the
+                    # stream finishes.
+                    cd = st.session_state.cves_data or {}
+                    cve_id_set: dict[str, None] = {}
+                    for c in (cd.get("top_cves") or []) + (cd.get("newly_added_kev") or []):
+                        cid = c.get("cve_id")
+                        if cid:
+                            cve_id_set.setdefault(cid, None)
+                    advisories = _fetch_advisories_by_cves(tuple(cve_id_set.keys()))
+                    st.session_state.advisory_url_by_id = _build_advisory_url_lookup(advisories)
                     status_ph.info("RAG evidence ready — streaming markdown…")
 
                 elif event_name == "markdown":
@@ -277,6 +337,14 @@ if run:
                     break
 
             st.session_state.markdown_final = "".join(buffer)
+            # Final render with advisory IDs linkified — during streaming we
+            # render raw to avoid re-running the regex on every token.
+            md_ph.markdown(
+                _linkify_advisory_ids(
+                    st.session_state.markdown_final,
+                    st.session_state.advisory_url_by_id,
+                )
+            )
 
     except requests.exceptions.ConnectionError:
         st.session_state.error = f"Cannot connect to backend at {API_BASE}"
@@ -301,11 +369,84 @@ else:
         c[5].metric("has_exploit_ref", meta.get("has_exploit_ref_count", "—"))
     if st.session_state.markdown_final:
         st.subheader("Weekly brief")
-        st.markdown(st.session_state.markdown_final)
+        st.markdown(
+            _linkify_advisory_ids(
+                st.session_state.markdown_final,
+                st.session_state.advisory_url_by_id,
+            )
+        )
+
+# ---- referenced advisories (bottom) --------------------------------------
+
+
+def _render_advisories_section(cves_data: dict) -> None:
+    # Collect every CVE the brief surfaced (top + newly added), dedup in-order.
+    seen: dict[str, None] = {}
+    for c in (cves_data.get("top_cves") or []) + (cves_data.get("newly_added_kev") or []):
+        cid = c.get("cve_id")
+        if cid:
+            seen.setdefault(cid, None)
+    cve_ids = list(seen.keys())
+    if not cve_ids:
+        return
+
+    advisories = _fetch_advisories_by_cves(tuple(cve_ids))
+    if not advisories:
+        st.markdown("---")
+        st.caption(
+            "No advisories in the Snowflake `advisories` table mention the "
+            "CVEs covered by this brief."
+        )
+        return
+
+    st.markdown("---")
+    st.header(f"Referenced Advisories ({len(advisories)})")
+    st.caption(
+        "Filtered from the Snowflake `advisories` table — only advisories "
+        "whose `cve_ids_mentioned` column contains at least one CVE from this "
+        "brief. HTML served from S3 via `/advisory/{id}/html`."
+    )
+
+    for a in advisories:
+        aid = a.get("advisory_id")
+        matched = a.get("matched_cve_ids") or []
+        match_str = ", ".join(matched) if matched else "—"
+        label = f"{aid}  ·  mentions: {match_str}"
+        with st.expander(label, expanded=False):
+            title = a.get("title") or "—"
+            url = a.get("url")
+            pub = a.get("published_date") or "—"
+            doc_type = a.get("document_type") or a.get("advisory_type") or "—"
+            st.markdown(f"**{title}**")
+            st.caption(f"published: {pub} · type: {doc_type}")
+            if url:
+                st.markdown(f"[Source on CISA]({url})")
+
+            if st.button("Load HTML", key=f"load_advisory_{aid}"):
+                st.session_state[f"advisory_open_{aid}"] = True
+
+            if st.session_state.get(f"advisory_open_{aid}"):
+                html_src = _fetch_advisory_html(aid)
+                if html_src is None:
+                    st.warning(f"Could not fetch HTML for `{aid}`.")
+                else:
+                    # Sandbox the advisory HTML — no scripts, no top-nav, no
+                    # same-origin access to the Streamlit page.
+                    escaped = html_lib.escape(html_src, quote=True)
+                    iframe = (
+                        f'<iframe sandbox="" srcdoc="{escaped}" '
+                        f'style="width:100%;height:700px;border:1px solid #ddd;'
+                        f'border-radius:6px;"></iframe>'
+                    )
+                    components.html(iframe, height=720, scrolling=False)
+
 
 # ---- CVE detail list (bottom) --------------------------------------------
 
 cves_data = st.session_state.cves_data
+if cves_data:
+    _render_advisories_section(cves_data)
+
 if cves_data:
     st.markdown("---")
     st.header("Retrieved CVEs")

@@ -12,11 +12,8 @@ import os
 import re
 from datetime import date, timedelta
 
-import html as html_lib
-
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from streamlit_cti.theme import inject_global_theme
 
 # Matches CISA advisory IDs wrapped in backticks as emitted by the synthesis
@@ -173,17 +170,6 @@ for key, default in [
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
-
-
-@st.cache_data(show_spinner=False)
-def _fetch_advisory_html(advisory_id: str) -> str | None:
-    try:
-        r = requests.get(f"{API_BASE}/advisory/{advisory_id}/html", timeout=30)
-        if r.status_code == 200:
-            return r.text
-    except requests.RequestException:
-        pass
-    return None
 
 
 @st.cache_data(show_spinner=False)
@@ -423,24 +409,6 @@ def _render_advisories_section(cves_data: dict) -> None:
             st.caption(f"published: {pub} · type: {doc_type}")
             if url:
                 st.markdown(f"[Source on CISA]({url})")
-
-            if st.button("Load HTML", key=f"load_advisory_{aid}"):
-                st.session_state[f"advisory_open_{aid}"] = True
-
-            if st.session_state.get(f"advisory_open_{aid}"):
-                html_src = _fetch_advisory_html(aid)
-                if html_src is None:
-                    st.warning(f"Could not fetch HTML for `{aid}`.")
-                else:
-                    # Sandbox the advisory HTML — no scripts, no top-nav, no
-                    # same-origin access to the Streamlit page.
-                    escaped = html_lib.escape(html_src, quote=True)
-                    iframe = (
-                        f'<iframe sandbox="" srcdoc="{escaped}" '
-                        f'style="width:100%;height:700px;border:1px solid #ddd;'
-                        f'border-radius:6px;"></iframe>'
-                    )
-                    components.html(iframe, height=720, scrolling=False)
 
 
 # ---- CVE detail list (bottom) --------------------------------------------

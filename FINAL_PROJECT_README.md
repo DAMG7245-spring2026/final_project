@@ -1,9 +1,14 @@
+# Work disclosure: Required attestation and contribution declaration on the GitHub page:
+WE ATTEST THAT WE HAVEN'T USED ANY OTHER STUDENTS' WORK IN OUR ASSIGNMENT AND ABIDE BY THE POLICIES LISTED IN THE STUDENT HANDBOOK
+* Wei-Cheng Tu: 33.3%
+* Nisarg Sheth: 33.3%
+* Yu-Tzu Li: 33.3%
+
 # Unstructured Advisory Pipeline
 
 This pipeline ingests **CISA Cybersecurity Advisories** (HTML) and converts them into structured, searchable knowledge — chunks stored in Snowflake with vector embeddings, and knowledge-graph triplets in neo4j.
 
 ---
-
 
 ## Prerequisites
 

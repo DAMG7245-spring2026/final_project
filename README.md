@@ -1,4 +1,4 @@
-# Work disclosure: Required attestation and contribution declaration on the GitHub page:
+# Cyber Threat Intelligence Platform
 
 WE ATTEST THAT WE HAVEN'T USED ANY OTHER STUDENTS' WORK IN OUR ASSIGNMENT AND ABIDE BY THE POLICIES LISTED IN THE STUDENT HANDBOOK
 
@@ -8,48 +8,14 @@ WE ATTEST THAT WE HAVEN'T USED ANY OTHER STUDENTS' WORK IN OUR ASSIGNMENT AND AB
 
 ---
 
-## Link
-- Viode Link: https://youtu.be/6Dxqd9D894g
-- website Link: http://35.93.255.114:8501/
-- google doc link: https://docs.google.com/document/d/1DCMEa1o1iLaozGY0VpRLzGYv_xMwoFTxowT8HaJmbcA
-- colab link: 
+## Links
 
-## Prerequisites
+- Video: https://youtu.be/6Dxqd9D894g
+- Website: http://35.93.255.114:8501/
+- Google Doc: https://docs.google.com/document/d/1DCMEa1o1iLaozGY0VpRLzGYv_xMwoFTxowT8HaJmbcA
+- Google colab: https://codelabs-preview.appspot.com/?file_id=1DCMEa1o1iLaozGY0VpRLzGYv_xMwoFTxowT8HaJmbcA#1
 
-| Requirement | Version |
-|------------|---------|
-| Python | 3.11+ |
-| Poetry | 2.2.1 |
-| Pydantic | 2.5.3 |
-| Docker | 20.10.24 |
-| Docker Compose | 2.17.2 |
-| Snowflake | — |
-| AWS S3 bucket | — |
-| AWS EC2 | — |
-| OpenAI API key | GPT-4o |
-| Neo4j AuraDB instance | — |
-
-## Running Locally
-
-```bash
-# Install dependencies
-poetry install
-
-# Start Redis
-docker run -d --name redis-local -p 6379:6379 redis:7-alpine
-
-
-# Start the server
-poetry run uvicorn app.main:app --reload --port 8000
-```
-
-API docs available at `http://localhost:8000/docs`
-
-## Running with Docker
-
-```bash
-docker compose -f docker/docker-compose.yml --env-file .env up --build
-```
+---
 
 ## Problem Statement
 
@@ -61,93 +27,84 @@ Our platform, the Cyber Threat Intelligence Platform, automatically ingests both
 
 ---
 
-## CTI Graph Console (application deliverables)
+## Table of Contents
 
-### FastAPI — operational metrics API
-
-Snowflake-backed read endpoints for the **Scene 1** operational dashboard and other UIs:
-
-| Module | Role |
-|--------|------|
-| [`app/services/metrics.py`](app/services/metrics.py) | Aggregations: CVE totals, KEV counts, `attack_techniques` count, `advisories` count, severity distribution, top KEV rows, recent `pipeline_runs`, freshness (`MAX(completed_at)` per source). |
-| [`app/routers/metrics.py`](app/routers/metrics.py) | HTTP surface for the above. |
-| [`app/main.py`](app/main.py) / [`app/routers/__init__.py`](app/routers/__init__.py) | Router registration. |
-
-**Endpoints (all `GET`, JSON):**
-
-- `/metrics/overview` — `total_cves_ingested`, `kev_flagged`, `attack_techniques_loaded`, `advisories_indexed`
-- `/metrics/severity-distribution` — `{ "items": [ { "severity", "count" }, ... ] }` from `cve_records` (`vuln_status <> 'REJECTED'`)
-- `/metrics/top-kev?limit=5` — latest KEV-added CVEs (same shape as dashboard table)
-- `/metrics/pipeline-runs?limit=10` — last runs from `pipeline_runs` (DAG, source, status, rows, duration, timestamp)
-- `/metrics/freshness` — last `completed_at` keyed as `nvd`, `kev`, `attck` / `mitre_attck`, `neo4j` (from `pipeline_runs.source`)
-
-### Streamlit — Home operational dashboard
-
-| Artifact | Description |
-|----------|-------------|
-| [`streamlit_cti/Home.py`](streamlit_cti/Home.py) | **Scene 1** layout: KPI cards, severity bar chart, top-5 KEV table, pipeline runs table (status styling), freshness tiles; per-panel error handling if an endpoint fails. |
-| [`streamlit_cti/lib/client.py`](streamlit_cti/lib/client.py) | `get_metrics_*` helpers calling the `/metrics/*` routes with the same base URL pattern as other pages. |
-
-### Streamlit — Attack Path Explorer
-
-| Topic | Implementation notes |
-|-------|-------------------------|
-| **Start types** | **CVE** and **Actor** only in the UI (`/graph/attack-path` still accepts `from_technique` for API clients). |
-| **List / detail correctness** | Detail panel uses a **focus node** derived from path structure (`_focus_node`): CVE-first paths show full **CVSS / KEV** blocks; **Actor** starts prefer the **first CVE on the path** when present, with a short “via actor” line. Routing uses **primary Neo4j label**, not only the start-type tab. |
-| **Metrics row** | For **CVE** start, fourth tile stays **“KEV flagged”** (first node KEV). For **Actor** start, it becomes **“Paths w/ KEV CVE”** (any KEV-flagged CVE on the path). Path cards reuse the focus node for KEV/severity badges where applicable. |
-| **CVE profile UX** | Per-path actions use `st.button(..., on_click=…)`; selection is clamped to valid indices; **persisted `code == 200` + non-dict `data`** is sanitized so a cold open does not show a phantom error. |
-| **Actor dropdown** | `_load_actors` wrapped in try/except so transport errors do not crash the page. |
-| **Quick picks (pre-fetch)** | When **CVE** mode and no results loaded yet (`ap_last_code is None`), the search panel shows **five “recently added KEV”** cards from `GET /metrics/top-kev` (cached); **“Use this CVE”** sets `st.session_state["ap_from_cve"]` so the CVE field prefills before **Fetch paths**. |
-
-### Airflow — S3, KEV sync, and Neo4j (structured CTI)
-
-Orchestration lives under [`airflow/dags/`](airflow/dags/). The repo [`README.md`](README.md) documents the full DAG set; **for the final report we call out only these three themes** (NVD staging on **S3**, **KEV** sync, and **Neo4j** structured sync).
-
-**S3 — NVD raw / curated staging (`s3://$S3_BUCKET/nvd/...`)**
-
-| DAG | File | Role |
-|-----|------|------|
-| **`nvd_fetch_dag`** | [`airflow/dags/nvd_fetch_dag.py`](airflow/dags/nvd_fetch_dag.py) | NVD API → **S3** raw month files (`*.jsonl`), mapped tasks per month; triggers transform downstream. |
-| **`nvd_transform_dag`** | [`airflow/dags/nvd_transform_dag.py`](airflow/dags/nvd_transform_dag.py) | **S3** raw JSONL → **S3** curated NDJSON per month (`schedule=None`, triggered). |
-| **`nvd_s3_slice_pipeline_dag`** | [`airflow/dags/nvd_s3_slice_pipeline_dag.py`](airflow/dags/nvd_s3_slice_pipeline_dag.py) | Incremental **date-sliced** pipeline: per slice, **fetch → transform → load** with intermediate objects on **S3** (slice prefixes under the bucket) before Snowflake merge; uses checkpoint **`nvd_s3_slice_pipeline_through`**. |
-
-**KEV sync**
-
-| DAG | File | Role |
-|-----|------|------|
-| **`kev_sync_dag`** | [`airflow/dags/kev_sync_dag.py`](airflow/dags/kev_sync_dag.py) | **`fetch_and_enrich`** (CISA KEV → Snowflake **`cve_records`**), **`resolve_pending`** (drain **`kev_pending_fetch`** / NVD backfill), then **`sync_kev_neo4j`** to update **KEV-related properties on existing `(:CVE)` nodes** in Neo4j. |
-
-**Neo4j — structured graph catch-up**
-
-| DAG | File | Role |
-|-----|------|------|
-| **`neo4j_structured_sync_dag`** | [`airflow/dags/neo4j_structured_sync_dag.py`](airflow/dags/neo4j_structured_sync_dag.py) | Snowflake → Neo4j for **structured** CTI entities: **`cve_cwe_kev_sync`**, **`attack_techniques_sync`**, **`chunk_technique_links_sync`**, driven by `loaded_to_neo4j` / graph-sync scripts (separate from the unstructured advisory HTML pipeline). |
-
-### Automated tests (metrics)
-
-- [`tests/unit/test_cti_routers.py`](tests/unit/test_cti_routers.py) — mocked coverage for `/metrics/overview`, `/metrics/severity-distribution`, `/metrics/pipeline-runs` response shapes.
+1. [Prerequisites](#prerequisites)
+2. [Environment Setup](#environment-setup)
+3. [Running Locally](#running-locally)
+4. [Running with Docker](#running-with-docker)
+5. [Architecture](#architecture)
+6. [User Flow](#user-flow)
 
 ---
 
-# Unstructured Advisory Pipeline
+## Prerequisites
 
-This pipeline ingests **CISA Cybersecurity Advisories** (HTML) and converts them into structured, searchable knowledge — chunks stored in Snowflake with vector embeddings, and knowledge-graph triplets in neo4j.
-
+| Requirement           | Version  |
+| --------------------- | -------- |
+| Python                | 3.11+    |
+| Poetry                | 2.2.1    |
+| Pydantic              | 2.5.3    |
+| Docker                | 20.10.24 |
+| Docker Compose        | 2.17.2   |
+| Snowflake             | —        |
+| AWS S3 bucket         | —        |
+| AWS EC2               | —        |
+| OpenAI API key        | GPT-4o   |
+| Neo4j AuraDB instance | —        |
 
 ---
 
-## Overview
+## Environment Setup
 
-The unstructured pipeline has 6 main stages:
+Create a `.env` file at the project root with the following variables:
 
-| Stage |
-|-------|
-| **1 — Scrape** |
-| **2 — Parse & Chunk** |
-| **3 — Embed** |
-| **4 — Extract Triplets** |
-| **5 — Deduplication Entity** |
-| **6 — Relation Inference** |
+```dotenv
+# Snowflake
+SNOWFLAKE_ACCOUNT=<org>-<account>
+SNOWFLAKE_USER=your_user
+SNOWFLAKE_PASSWORD=your_password
+SNOWFLAKE_DATABASE=CTI_PLATFORM_DATABASE
+SNOWFLAKE_SCHEMA=PUBLIC
+SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+
+# AWS S3 (raw HTML storage)
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_REGION=us-east-1
+S3_BUCKET=your-bucket-name
+
+# OpenAI (Stage 4 triplet extraction)
+OPENAI_API_KEY=
+
+# Neo4j (serving layer)
+NEO4J_URI=neo4j+s://xxxx.databases.neo4j.io
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=
+```
+
+---
+
+## Running Locally
+
+```bash
+# Install dependencies
+poetry install
+
+# Start Redis
+docker run -d --name redis-local -p 6379:6379 redis:7-alpine
+
+# Start the server
+poetry run uvicorn app.main:app --reload --port 8000
+```
+
+API docs available at `http://localhost:8000/docs`.
+
+## Running with Docker
+
+```bash
+docker compose -f docker/docker-compose.yml --env-file .env up --build
+```
 
 ---
 
@@ -217,109 +174,6 @@ graph TB
     NEO4J --> API
     API --> UI
 ```
-
----
-
-## CTI Graph Console (application deliverables)
-
-This section records **our team’s application-layer work** in this repository: the FastAPI CTI service extensions, the Streamlit “CTI Graph Console” (Home dashboard, shared theme, Attack Path Explorer), and supporting tests. It is separate from the **Unstructured Advisory Pipeline** section below and is intended to support the final project report.
-
-### FastAPI — operational metrics API
-
-Snowflake-backed read endpoints for the **Scene 1** operational dashboard and other UIs:
-
-| Module                                                                              | Role                                                                                                                                                                                          |
-| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`app/services/metrics.py`](app/services/metrics.py)                                | Aggregations: CVE totals, KEV counts, `attack_techniques` count, `advisories` count, severity distribution, top KEV rows, recent `pipeline_runs`, freshness (`MAX(completed_at)` per source). |
-| [`app/routers/metrics.py`](app/routers/metrics.py)                                  | HTTP surface for the above.                                                                                                                                                                   |
-| [`app/main.py`](app/main.py) / [`app/routers/__init__.py`](app/routers/__init__.py) | Router registration.                                                                                                                                                                          |
-
-**Endpoints (all `GET`, JSON):**
-
-- `/metrics/overview` — `total_cves_ingested`, `kev_flagged`, `attack_techniques_loaded`, `advisories_indexed`
-- `/metrics/severity-distribution` — `{ "items": [ { "severity", "count" }, ... ] }` from `cve_records` (`vuln_status <> 'REJECTED'`)
-- `/metrics/top-kev?limit=5` — latest KEV-added CVEs (same shape as dashboard table)
-- `/metrics/pipeline-runs?limit=10` — last runs from `pipeline_runs` (DAG, source, status, rows, duration, timestamp)
-- `/metrics/freshness` — last `completed_at` keyed as `nvd`, `kev`, `attck` / `mitre_attck`, `neo4j` (from `pipeline_runs.source`)
-
-### Streamlit — Home operational dashboard
-
-| Artifact                                                     | Description                                                                                                                                                               |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`streamlit_cti/Home.py`](streamlit_cti/Home.py)             | **Scene 1** layout: KPI cards, severity bar chart, top-5 KEV table, pipeline runs table (status styling), freshness tiles; per-panel error handling if an endpoint fails. |
-| [`streamlit_cti/lib/client.py`](streamlit_cti/lib/client.py) | `get_metrics_*` helpers calling the `/metrics/*` routes with the same base URL pattern as other pages.                                                                    |
-
-### Streamlit — shared theme
-
-| Artifact                                           | Description                                                                                                                                                                                                                     |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`streamlit_cti/theme.py`](streamlit_cti/theme.py) | Global CSS tokens (Syne / JetBrains Mono, dark surfaces, inputs, buttons, alerts) injected after `st.set_page_config`.                                                                                                          |
-| **Pages wired**                                    | Home, Attack Path, NL Query, Weekly Brief, Vector DB Eval call `inject_global_theme()` after page config.                                                                                                                       |
-| **Fixes**                                          | Removed a one-shot `session_state` guard that skipped CSS on multipage sidebar navigation (stale “default” UI); adjusted BaseWeb `select` / multiselect styling so Vector Eval multiselects do not show a dark “blob” artifact. |
-
-### Streamlit — Attack Path Explorer
-
-| Topic                         | Implementation notes                                                                                                                                                                                                                                                                                                                          |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **List / detail correctness** | Detail panel uses a **focus node** derived from path structure (`_focus_node`): CVE-first paths under Technique mode show full **CVSS / KEV** blocks; Actor/Technique starts prefer the **first CVE on the path** when present, with a short “via actor / technique” line. Routing uses **primary Neo4j label**, not only the start-type tab. |
-| **Metrics row**               | For CVE start, fourth tile stays **“KEV flagged”** (first node KEV). For Actor/Technique, it becomes **“Paths w/ KEV CVE”** (any KEV-flagged CVE on the path). Path cards reuse the focus node for KEV/severity badges where applicable.                                                                                                      |
-| **CVE profile UX**            | Per-path actions use `st.button(..., on_click=…)`; selection is clamped to valid indices; **persisted `code == 200` + non-dict `data`** is sanitized so a cold open does not show a phantom error.                                                                                                                                            |
-| **Actor dropdown**            | `_load_actors` wrapped in try/except so transport errors do not crash the page.                                                                                                                                                                                                                                                               |
-| **Quick picks (pre-fetch)**   | When **CVE** mode and no results loaded yet (`ap_last_code is None`), the search panel shows **five “recently added KEV”** cards from `GET /metrics/top-kev` (cached); **“Use this CVE”** sets `st.session_state["ap_from_cve"]` so the CVE field prefills before **Fetch paths**.                                                            |
-
-### Airflow — S3, KEV sync, and Neo4j (structured CTI)
-
-Orchestration lives under [`airflow/dags/`](airflow/dags/). The repo [`README.md`](README.md) documents the full DAG set; **for the final report we call out only these three themes** (NVD staging on **S3**, **KEV** sync, and **Neo4j** structured sync).
-
-**S3 — NVD raw / curated staging (`s3://$S3_BUCKET/nvd/...`)**
-
-| DAG                             | File                                                                                     | Role                                                                                                                                                                                                                             |
-| ------------------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`nvd_fetch_dag`**             | [`airflow/dags/nvd_fetch_dag.py`](airflow/dags/nvd_fetch_dag.py)                         | NVD API → **S3** raw month files (`*.jsonl`), mapped tasks per month; triggers transform downstream.                                                                                                                             |
-| **`nvd_transform_dag`**         | [`airflow/dags/nvd_transform_dag.py`](airflow/dags/nvd_transform_dag.py)                 | **S3** raw JSONL → **S3** curated NDJSON per month (`schedule=None`, triggered).                                                                                                                                                 |
-| **`nvd_s3_slice_pipeline_dag`** | [`airflow/dags/nvd_s3_slice_pipeline_dag.py`](airflow/dags/nvd_s3_slice_pipeline_dag.py) | Incremental **date-sliced** pipeline: per slice, **fetch → transform → load** with intermediate objects on **S3** (slice prefixes under the bucket) before Snowflake merge; uses checkpoint **`nvd_s3_slice_pipeline_through`**. |
-
-**KEV sync**
-
-| DAG                | File                                                           | Role                                                                                                                                                                                                                                       |
-| ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **`kev_sync_dag`** | [`airflow/dags/kev_sync_dag.py`](airflow/dags/kev_sync_dag.py) | **`fetch_and_enrich`** (CISA KEV → Snowflake **`cve_records`**), **`resolve_pending`** (drain **`kev_pending_fetch`** / NVD backfill), then **`sync_kev_neo4j`** to update **KEV-related properties on existing `(:CVE)` nodes** in Neo4j. |
-
-**Neo4j — structured graph catch-up**
-
-| DAG                             | File                                                                                     | Role                                                                                                                                                                                                                                                 |
-| ------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`neo4j_structured_sync_dag`** | [`airflow/dags/neo4j_structured_sync_dag.py`](airflow/dags/neo4j_structured_sync_dag.py) | Snowflake → Neo4j for **structured** CTI entities: **`cve_cwe_kev_sync`**, **`attack_techniques_sync`**, **`chunk_technique_links_sync`**, driven by `loaded_to_neo4j` / graph-sync scripts (separate from the unstructured advisory HTML pipeline). |
-
-### Automated tests (metrics)
-
-- [`tests/unit/test_cti_routers.py`](tests/unit/test_cti_routers.py) — mocked coverage for `/metrics/overview`, `/metrics/severity-distribution`, `/metrics/pipeline-runs` response shapes.
-
----
-
-## Prerequisites
-
-| Requirement           | Version  |
-| --------------------- | -------- |
-| Python                | 3.11+    |
-| Poetry                | 2.2.1    |
-| Pydantic              | 2.5.3    |
-| Docker                | 20.10.24 |
-| Docker Compose        | 2.17.2   |
-| Snowflake             | —        |
-| AWS S3 bucket         | —        |
-| AWS EC2               | —        |
-| OpenAI API key        | GPT-4o   |
-| Neo4j AuraDB instance | —        |
-
-## Table of Contents
-
-1. [CTI Graph Console (application deliverables)](#cti-graph-console-application-deliverables)
-2. [Overview](#overview)
-3. [Architecture](#architecture)
-4. [User Flow](#user-flow)
-5. [Prerequisites](#prerequisites)
-6. [Environment Setup](#environment-setup)
 
 ---
 
@@ -440,233 +294,3 @@ flowchart TB
 
     Synth --> Out
 ```
-
----
-
-# Unstructured Advisory Pipeline
-
-This pipeline ingests **CISA Cybersecurity Advisories** (HTML) and converts them into structured, searchable knowledge — chunks stored in Snowflake with vector embeddings, and knowledge-graph triplets in neo4j.
-
-## Overview
-
-The unstructured pipeline has 6 main stages:
-
-| Stage                        |
-| ---------------------------- |
-| **1 — Scrape**               |
-| **2 — Parse & Chunk**        |
-| **3 — Embed**                |
-| **4 — Extract Triplets**     |
-| **5 — Deduplication Entity** |
-| **6 — Relation Inference**   |
-
----
-
-## Pipeline Description
-
-### Stage 1 — Scrape
-
-The scraper paginates through the CISA advisory listing at `cisa.gov/news-events/cybersecurity-advisories`, collecting two advisory types: **Analysis Reports** and **Cybersecurity Advisories**. For each new entry it extracts `advisory_id`, title, URL, publish date, and type, then downloads the full HTML page, uploads it to **AWS S3** at `raw/advisories/{advisory_id}.html`, and inserts the metadata into the Snowflake `advisories` table.
-
-### Stage 2 — Parse & Chunk
-
-Raw HTML is retrieved from S3 and cleaned by stripping noise tags (`<script>`, `<style>`, `<nav>`, `<footer>`, etc.). The document is then split at heading boundaries (`h2` / `h3`) into semantic sections. Each section heading is mapped to a **canonical section name** — `Summary`, `Technical Detail`, `Mitigation`, `IoC`, `Detection`, or `General` — based on keyword matching.
-
-Chunking strategy varies by document type: each type has a maximum token budget and a preferred heading level. Sections that exceed the token limit are sub-split with a 100–200 token overlap to preserve context across boundaries.
-
-| Document Type   | Max Tokens |
-| --------------- | ---------- |
-| MAR             | 1400       |
-| ANALYSIS_REPORT | 1200       |
-| JOINT_CSA       | 1000       |
-| STOPRANSOMWARE  | 1000       |
-| CSA             | 1000       |
-| IR_LESSONS      | 700        |
-
-All chunks are written to the Snowflake `advisory_chunks` table.
-
-### Stage 3 — Embed
-
-For every chunk in `advisory_chunks`, the pipeline calls **Snowflake Cortex** `EMBED_TEXT_1024()` (arctic-embed-l-v2.0, 1024 dimensions) and writes the result back to the `chunk_embedding` column. The compute runs entirely inside Snowflake, keeping latency and cost low.
-
-### Stage 4 — Extract Triplets
-
-The goal of this stage is to have an LLM automatically extract structured knowledge from each advisory — specifically, triplets of the form `(subject, relation, object)` that capture "who did what to whom."
-
-Before processing any new report, we use vector similarity to retrieve the 4 most similar reports from a **demonstration pool** of 100 manually annotated advisories, include their example triplets in the prompt, and let the LLM learn from them before answering.
-
-Once the LLM returns its output, three filtering steps are applied:
-
-1. **Relation whitelist** — only 7 relation types are accepted: `uses`, `targets`, `exploits`, `attributed_to`, `affects`, `has_weakness`, `mitigates`. Everything else is rejected.
-2. **Vague-term filter** — subject and object cannot be non-specific phrases like "the attacker" or "malicious actors."
-3. **Exact deduplication** — if identical triplets appear more than once in the same report, only one copy is kept.
-
-Only triplets that pass all three checks are written to the `extracted_triplets` table in Snowflake.
-
-### Stage 5 — Entity Deduplication
-
-After Stage 4, different reports may refer to the same real-world entity under different names — for example, "APT29", "Cozy Bear", and "APT 29" all refer to the same group. Left unaddressed, these would appear as separate nodes in the knowledge graph.
-
-To fix this, we collect all entity names from the database and convert each into a vector using Snowflake's built-in embedding model. We then compute cosine similarity: any pair scoring above **0.85** is flagged as a potential match.
-
-Each candidate pair is sent to GPT-4o with the question: _"Are these two names the same real-world entity? If so, which name should be the canonical form?"_ If GPT-4o confirms a match, all aliases are replaced with the canonical name throughout the database, and an additional round of deduplication removes any triplets that become identical after normalisation.
-
-### Stage 6 — Relation Inference
-
-After storing triplets into Neo4j, we noticed that nodes from the same report are not always connected — for example, a report might mention both that APT29 used Cobalt Strike and that a CVE affects Exchange Server, but never explicitly link those two facts. The result is disconnected subgraphs with no edges between them.
-
-To fill in these missing links, we run a **Union-Find algorithm** on each report's subgraph to identify disconnected components. If only one component exists, the graph is already fully connected and we skip it. For reports with multiple components, we select the highest-degree node from each component as its representative, designate the most central one the **topic entity** (usually the main threat actor), and pair it with all other representatives.
-
-Each pair — along with the report's full text — is sent to GPT-4o: _"Based on this report, what is the relationship between these two entities?"_ If a clear relationship exists, GPT-4o returns a triplet; if not, we skip that pair.
-
-### Serving — Query Flow
-
-Users submit a natural language question through the Streamlit UI, which calls `POST /query`. The API first passes the question to an **LLM route classifier** that decides which retrieval strategy to use:
-
-- **text route** — No specific named entity in the question, or the question asks for guidance, mitigation, or detection advice. The API runs **hybrid search** (BM25 in-memory index + Snowflake Cortex vector search, fused with Reciprocal Rank Fusion at α = 0.4) against `advisory_chunks` and feeds the top-10 results to an LLM to generate the final answer.
-- **graph route** — The question names a specific entity and asks for a structured fact (e.g. "Which CVEs does Volt Typhoon exploit?"). The API calls **Text2Cypher** to generate a Cypher query, runs it against Neo4j, and synthesises the answer from the graph rows. If the query returns zero rows, the pipeline automatically falls back to the text route.
-- **both route** — The question involves a specific entity but also asks for narrative context (detection, mitigation, full picture). The graph and text branches run **in parallel**; the LLM merges both result sets into a single answer.
-
-The endpoint returns a `QueryResponse` containing the answer, the chosen route, optional Cypher, graph rows, and the supporting advisory chunks.
-
----
-
-## Project Journey — Challenges & Solutions
-
-### Chunking Pipeline
-
-#### Challenge — Why section-based chunking, and how we split each document type
-
-**Problem.** A fixed-size sliding-window chunker slices semantic units (`Mitigation`, `IoC`, per-sample `Findings`) mid-sentence, so retrieval surfaces fragments instead of self-contained answers. Worse, CISA labels only two `advisory_type` values but actual HTML structure varies across six document families — MAR uses `h3 Findings` over per-sample `h4`, Joint CSAs use `h2`, legacy CSAs have no `h2` at all — so one global config either collapses MAR samples into giant blocks or shatters IR Lessons bullets into useless fragments.
-
-**Solution.** Cut on **HTML heading structure**, with per-document-type budgets:
-
-1. **Classify first.** Fast metadata path uses `(title, advisory_type, co_authors)`; body fingerprint (≥2 authoring-agency acronyms) only fires when metadata is inconclusive.
-2. **Hierarchical section split.** Walk DOM, cut on `main_level` then `sub_level`; normalise headings to canonical `section_name` via an order-sensitive keyword dict (specific first, `Summary` catch-all last, so `Relationship Summary` doesn't get swallowed).
-3. **Per-type strategy table:**
-
-   | Document Type      | `max_tokens` | `overlap` | `main_level` | `sub_level` | Why |
-   |--------------------|-------------:|----------:|--------------|-------------|-----|
-   | **MAR**            | 1400         | 200       | `h3`         | `h4`        | Per-sample block (metadata + strings + behavior) is 800–1300 tokens. |
-   | **ANALYSIS_REPORT**| 1200         | 150       | `h2`         | `h3`        | Detection block (YARA/Sigma) needs room. |
-   | **JOINT_CSA**      | 1000         | 150       | `h2`         | `h3`        | 1000t fits one Technical Details substep. |
-   | **STOPRANSOMWARE** | 1000         | 150       | `h2`         | `h3`        | Same shape as Joint CSA. |
-   | **CSA**            | 1000         | 150       | `auto`       | `h3`        | Falls back to `h3` for legacy CSAs without `h2`. |
-   | **IR_LESSONS**     | 700          | 100       | `h2`         | `h3`        | Lessons are short (100–300 tokens); larger budget would merge unrelated ones. |
-
-**Outcome.** Full reflow on 2026-04-10: **302 advisories → 4,068 chunks** in ~40 min, zero exceptions. Citations align with document family; retrieval returns coherent sections.
-
-### Triplet Extraction Pipeline
-
-#### Challenge 1 — Entity duplication in the knowledge graph
-
-**Problem.** Same real-world entity appears under different surface forms (`APT29`, `Cozy Bear`, `Nobelium`, `Midnight Blizzard`). Each alias becomes a separate Neo4j node, so a Cypher query on one name misses triplets attached to siblings.
-
-**Solution — Stage 5 Entity Deduplication.** Embed every distinct entity with Cortex `EMBED_TEXT_1024()` → flag pairs with cosine ≥ 0.85 as candidates → GPT-4o adjudicates each candidate (`"Are these the same entity? If so, canonical form?"`) → rewrite confirmed aliases across `extracted_triplets` → second exact-dedup pass before pushing to Neo4j. The LLM judge is required because embedding similarity alone misclassifies pairs like `Lazarus Group` vs `Lazarus malware`.
-
-**Outcome.** Actor neighbourhoods that were split across 3–4 alias nodes now live on a single canonical node; `/query` stops missing sibling-alias triplets.
-
-#### Challenge 2 — LLM-hallucinated relation types
-
-**Problem.** GPT-4o invents off-schema labels (`is_a`, `linked_to`, `associated_with`, `possibly_used`) that explode Neo4j's relationship-type count and break every Cypher template. It also produces vague subjects/objects (`"the attacker"`, `"malicious actors"`) that look valid but carry no referent.
-
-**Solution.** Three filters before persistence: **(1) Pydantic-enforced relation whitelist** — only `uses / targets / exploits / attributed_to / affects / has_weakness / mitigates` accepted; **(2) vague-term filter** drops triplets whose endpoints are non-specific pronouns/nouns; **(3) per-advisory exact dedup**. **In-context learning** (top-4 similar advisories from a 100-triplet demonstration pool) pre-biases the raw output toward the whitelist, lowering rejection rate.
-
-**Outcome.** Neo4j relationship types stay bounded at seven; Text2Cypher templates can hard-code the vocabulary; no junk-drawer nodes from vague endpoints.
-
-### Hybrid Search Evaluation
-
-#### Challenge — Picking the right BM25 / vector mix (and whether doc-type filters help)
-
-**Problem.** Hybrid retrieval has two open knobs we couldn't pick by intuition: (1) the RRF mixing weight `α` between BM25 and Cortex vector, and (2) whether to pre-filter chunks by `document_type` (MAR / Joint CSA / …) before fusion. Both choices directly drive downstream answer quality, so we needed empirical numbers, not guesses.
-
-**Solution — golden-set sweep.** Built a **125-question golden set** (with known target chunks per question, balanced across the six doc types) and ran a matrix of retriever configs at top-K=10, top-N pool=50, `k_rrf=60`, embedding `snowflake-arctic-embed-l-v2.0` (1024-d):
-
-- **Baselines:** `vector_only`, `bm25_only`
-- **Hybrid α sweep:** `α ∈ {0.0, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0}`
-- **Doc-type filtering:** `+doctype_oracle` (gold doc-type pre-filter, upper bound) vs `+doctype_mcp` (LLM-classified, simulating production)
-
-Reported per-config **hit@1/3/5/10**, **adv_hit@5/10** (advisory-level), **MRR**, and **nDCG@10**, plus per-doc-type breakdowns and a failure list (queries with hit@10 = 0).
-
-**Key findings.**
-
-1. **BM25 carries most of the signal.** `bm25_only` (MRR 0.618) beats `vector_only` (MRR 0.519); pure vector is the worst real config. Acronym- and CVE-heavy CTI vocabulary plays to lexical retrieval's strengths.
-2. **Best α is small.** Sweep peaks at **`α = 0.4`** (MRR 0.629) — vector is a tiebreaker, not the primary ranker. Anything ≥ 0.5 degrades steadily.
-3. **Doc-type filter helps if classification is right, hurts otherwise.** `hybrid@0.2+doctype_oracle` is the overall best (MRR 0.660, nDCG 0.714). But `doctype_mcp` (LLM classifier with 0.616 agreement) collapses every config to MRR ≈ 0.40 — a wrong filter prunes the gold chunk before fusion.
-4. **MAR is the hardest doc type** (hit@5 ≈ 0.667); CSA the easiest (≈ 0.867). MAR queries often need the right per-sample SHA256 block, which is exactly the per-type chunking decision above.
-
-**Outcome.** Production defaults: **`α = 0.4` hybrid, no doc-type filter** (until the MCP classifier crosses ~0.85 agreement). The full report regenerates from `streamlit_cti/eval_artifacts/` and is browsable in the Streamlit **Vector DB Eval** page.
-
----
-
-## Environment Setup
-
-Minimum required for the unstructured pipeline:
-
-```dotenv
-# Snowflake
-SNOWFLAKE_ACCOUNT=<org>-<account>
-SNOWFLAKE_USER=your_user
-SNOWFLAKE_PASSWORD=your_password
-SNOWFLAKE_DATABASE=CTI_PLATFORM_DATABASE
-SNOWFLAKE_SCHEMA=PUBLIC
-SNOWFLAKE_WAREHOUSE=COMPUTE_WH
-
-# AWS S3 (raw HTML storage)
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
-AWS_REGION=us-east-1
-S3_BUCKET=your-bucket-name
-
-# OpenAI (Stage 4 triplet extraction)
-OPENAI_API_KEY=
-
-# Neo4j (serving layer)
-NEO4J_URI=neo4j+s://xxxx.databases.neo4j.io
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=
-```
-
----
-
-### Triplet Extraction Evaluation
-
-We evaluate extraction quality using the 100 manually annotated advisories in the demonstration pool (623 gold triplets total). The script `scripts/evaluate_triplet.py` re-runs the full pipeline on each advisory — kNN demo retrieval, GPT-4o prediction, and filtering — but writes nothing to the database. The predicted triplets are then compared against the hand-labelled gold to compute **Precision**, **Recall**, and **F1**. Our target is F1 ≥ 0.75.
-
-![F1](<a1.png>)
-
-
-### Triplet Rejection Strategy
-
-When GPT-4o returns a list of candidate triplets, three filters are applied in sequence before anything is written to Snowflake.
-
-The first filter checks the relation name against a whitelist of exactly 7 allowed values: `uses`, `targets`, `exploits`, `attributed_to`, `affects`, `has_weakness`, and `mitigates`. Any other relation string is discarded. These relations were removed during development because they either overlap semantically with whitelisted ones, appear almost exclusively on IOC nodes that are out of scope, or are too vague to add signal to the graph.
-
-The second filter rejects triplets where the subject or object is a non-specific noun phrase. A denylist covers terms like `the attacker`, `malicious actors`, `threat actor`, `the group`, and similar generic references that do not correspond to a named real-world entity.
-
-![Triplet rejection](<a2.png>)
-
-
-
-
----
-
-## AI Usage Disclosure
-
-| Tool | Part of Project | How It Was Used |
-|------|----------------|-----------------|
-| **OpenAI GPT-4o** | LLM Extraction Pipeline | Triplet extraction from CISA advisory reports using prompting approach (subject, relation, object triples with a fixed relation whitelist) |
-| **OpenAI GPT-4o** | Entity Alignment | Identifying aliases for the same real-world entity and normalizing extracted triplets to canonical names |
-| **OpenAI GPT-4o** | Relation Inference | Inferring missing relationships between disconnected subgraphs in the knowledge graph |
-| **OpenAI GPT-4o** | Text to Cypher (Natural Language Query) | Translating user natural-language questions into Cypher queries for Neo4j, and summarizing graph query results into readable answers |
-| **OpenAI GPT-4o-mini** | Entity Type Classification | Classifying entity nodes (Actor, Malware, Technique, etc.) |
-| **LiteLLM** (via custom LLM Router) | Runtime LLM Orchestration | All runtime LLM calls in the FastAPI app are routed through a LLMRouter built on LiteLLM. It maps each task for example, Cypher generation, answer generation, RAG routing, and tracks per-call token usage and cost |
-| **Claude Code** | Development | Assisting with writing and debugging Python pipeline scripts |
-
-
-
-Metrics
-![API lantency](<a3.png>)
-![Trunk time](<a4.png>)
-![Token consuming1](<a5.png>)
-![Token consuming2](<a6.png>)

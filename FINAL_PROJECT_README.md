@@ -35,20 +35,13 @@ Snowflake-backed read endpoints for the **Scene 1** operational dashboard and ot
 | [`streamlit_cti/Home.py`](streamlit_cti/Home.py) | **Scene 1** layout: KPI cards, severity bar chart, top-5 KEV table, pipeline runs table (status styling), freshness tiles; per-panel error handling if an endpoint fails. |
 | [`streamlit_cti/lib/client.py`](streamlit_cti/lib/client.py) | `get_metrics_*` helpers calling the `/metrics/*` routes with the same base URL pattern as other pages. |
 
-### Streamlit — shared theme
-
-| Artifact | Description |
-|----------|-------------|
-| [`streamlit_cti/theme.py`](streamlit_cti/theme.py) | Global CSS tokens (Syne / JetBrains Mono, dark surfaces, inputs, buttons, alerts) injected after `st.set_page_config`. |
-| **Pages wired** | Home, Attack Path, NL Query, Weekly Brief, Vector DB Eval call `inject_global_theme()` after page config. |
-| **Fixes** | Removed a one-shot `session_state` guard that skipped CSS on multipage sidebar navigation (stale “default” UI); adjusted BaseWeb `select` / multiselect styling so Vector Eval multiselects do not show a dark “blob” artifact. |
-
 ### Streamlit — Attack Path Explorer
 
 | Topic | Implementation notes |
 |-------|-------------------------|
-| **List / detail correctness** | Detail panel uses a **focus node** derived from path structure (`_focus_node`): CVE-first paths under Technique mode show full **CVSS / KEV** blocks; Actor/Technique starts prefer the **first CVE on the path** when present, with a short “via actor / technique” line. Routing uses **primary Neo4j label**, not only the start-type tab. |
-| **Metrics row** | For CVE start, fourth tile stays **“KEV flagged”** (first node KEV). For Actor/Technique, it becomes **“Paths w/ KEV CVE”** (any KEV-flagged CVE on the path). Path cards reuse the focus node for KEV/severity badges where applicable. |
+| **Start types** | **CVE** and **Actor** only in the UI (`/graph/attack-path` still accepts `from_technique` for API clients). |
+| **List / detail correctness** | Detail panel uses a **focus node** derived from path structure (`_focus_node`): CVE-first paths show full **CVSS / KEV** blocks; **Actor** starts prefer the **first CVE on the path** when present, with a short “via actor” line. Routing uses **primary Neo4j label**, not only the start-type tab. |
+| **Metrics row** | For **CVE** start, fourth tile stays **“KEV flagged”** (first node KEV). For **Actor** start, it becomes **“Paths w/ KEV CVE”** (any KEV-flagged CVE on the path). Path cards reuse the focus node for KEV/severity badges where applicable. |
 | **CVE profile UX** | Per-path actions use `st.button(..., on_click=…)`; selection is clamped to valid indices; **persisted `code == 200` + non-dict `data`** is sanitized so a cold open does not show a phantom error. |
 | **Actor dropdown** | `_load_actors` wrapped in try/except so transport errors do not crash the page. |
 | **Quick picks (pre-fetch)** | When **CVE** mode and no results loaded yet (`ap_last_code is None`), the search panel shows **five “recently added KEV”** cards from `GET /metrics/top-kev` (cached); **“Use this CVE”** sets `st.session_state["ap_from_cve"]` so the CVE field prefills before **Fetch paths**. |

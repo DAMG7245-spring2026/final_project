@@ -180,7 +180,7 @@ def technique_detail_cypher(technique_id: str) -> tuple[str, dict[str, Any]]:
 
 
 def _clamp_hops_limit(max_hops: int, limit: int) -> tuple[int, int]:
-    mh = max(1, min(int(max_hops), 6))
+    mh = max(1, min(int(max_hops), 8))
     lim = max(1, min(int(limit), 25))
     return mh, lim
 
@@ -198,32 +198,49 @@ def attack_paths_cypher(
     """
     mh, lim = _clamp_hops_limit(max_hops, limit)
     kind_l = kind.strip().lower()
-    # Technique: undirected var-length + CVE→Technique hops. OPTIONAL MATCH can
-    # return many rows per start; aggregate with collect so we never drop the start
-    # row. Filter bad paths with CASE (not WHERE) so rows ending on :Technique are
-    # nulled out instead of removing the outer row. CVE hop: exclude Deferred only
-    # (no 2015 published_date filter — it hid common REFERENCE edges).
+    # Technique: use concrete patterns that exist in this graph (:CVE)-[:REFERENCES_TECHNIQUE]->
+    # (:Technique), (:CVE)-[:HAS_WEAKNESS]->(:CWE). Undirected var-length paths often
+    # produced zero rows (paths ending on :Technique filtered out, sparse ATT&CK rels).
     if kind_l == "technique":
+        lim_hi = max(0, lim - 1)
+        # Hop semantics: 1 = Technique←CVE only; 2+ adds CVE→CWE; 3+ adds other techniques via same CVE.
+        if mh < 2:
+            q = f"""
+    MATCH (start:Technique {{id: $val}})
+    OPTIONAL MATCH p_rt = (start)<-[:REFERENCES_TECHNIQUE]-(cve_r:CVE)
+    WHERE coalesce(cve_r.vuln_status, '') <> 'Deferred'
+    WITH start, collect(DISTINCT p_rt) AS rt_col
+    WITH [p IN rt_col WHERE p IS NOT NULL][0..{lim_hi}] AS limited
+    RETURN [p IN limited | {{
+      nodes: [n IN nodes(p) | {{labels: labels(n), properties: properties(n)}}],
+      rels: [r IN relationships(p) | {{type: type(r), properties: properties(r)}}]
+    }}] AS paths
+    """
+            return q, {"val": value}
+
+        third_block = ""
+        merge_paths = (
+            "[p IN rt_col WHERE p IS NOT NULL] + [p IN rw_col WHERE p IS NOT NULL] AS all_paths"
+        )
+        if mh >= 3:
+            third_block = """
+    OPTIONAL MATCH p_rx = (start)<-[:REFERENCES_TECHNIQUE]-(cve_x:CVE)-[:REFERENCES_TECHNIQUE]->(t2:Technique)
+    WHERE coalesce(cve_x.vuln_status, '') <> 'Deferred' AND t2 <> start
+    WITH start, rt_col, rw_col, collect(DISTINCT p_rx) AS rx_col"""
+            merge_paths = (
+                "[p IN rt_col WHERE p IS NOT NULL] + [p IN rw_col WHERE p IS NOT NULL] "
+                "+ [p IN rx_col WHERE p IS NOT NULL] AS all_paths"
+            )
         q = f"""
     MATCH (start:Technique {{id: $val}})
-    OPTIONAL MATCH p_long = (start)-[*1..{mh}]-(e_long)
-    WITH start,
-      CASE
-        WHEN p_long IS NULL THEN null
-        WHEN e_long IS NOT NULL AND e_long:Technique THEN null
-        ELSE p_long
-      END AS p_long_ok
-    WITH start, collect(DISTINCT p_long_ok) AS long_ps
-    OPTIONAL MATCH p_cve = (start)<-[:REFERENCES_TECHNIQUE]-(cve:CVE)
-    WITH start, long_ps, p_cve, cve,
-      CASE
-        WHEN p_cve IS NULL THEN null
-        WHEN coalesce(cve.vuln_status, '') = 'Deferred' THEN null
-        ELSE p_cve
-      END AS p_cve_ok
-    WITH long_ps, collect(DISTINCT p_cve_ok) AS cve_ps
-    WITH [x IN long_ps WHERE x IS NOT NULL] + [x IN cve_ps WHERE x IS NOT NULL] AS raw
-    WITH [p IN raw][0..{lim}] AS limited
+    OPTIONAL MATCH p_rt = (start)<-[:REFERENCES_TECHNIQUE]-(cve_r:CVE)
+    WHERE coalesce(cve_r.vuln_status, '') <> 'Deferred'
+    WITH start, collect(DISTINCT p_rt) AS rt_col
+    OPTIONAL MATCH p_rw = (start)<-[:REFERENCES_TECHNIQUE]-(cve_w:CVE)-[:HAS_WEAKNESS]->(cwe:CWE)
+    WHERE coalesce(cve_w.vuln_status, '') <> 'Deferred'
+    WITH start, rt_col, collect(DISTINCT p_rw) AS rw_col{third_block}
+    WITH {merge_paths}
+    WITH all_paths[0..{lim_hi}] AS limited
     RETURN [p IN limited | {{
       nodes: [n IN nodes(p) | {{labels: labels(n), properties: properties(n)}}],
       rels: [r IN relationships(p) | {{type: type(r), properties: properties(r)}}]

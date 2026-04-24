@@ -122,6 +122,7 @@ def _init_state() -> None:
         "ap_last_err": "",
         "ap_selected_path": None,
         "ap_detail_visible": False,
+        "ap_results_mode": None,  # "CVE" | "Actor" — last successful fetch context
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -142,6 +143,7 @@ def _reset_results() -> None:
     st.session_state.ap_last_err = ""
     st.session_state.ap_selected_path = None
     st.session_state.ap_detail_visible = False
+    st.session_state.ap_results_mode = None
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -507,27 +509,42 @@ st.markdown(
     '<div class="ap-header">'
     '<div class="ap-breadcrumb">CTI-Graph · Graph Intelligence</div>'
     '<div class="ap-title">Attack Path Explorer</div>'
-    '<div class="ap-sub">Trace threat paths from a CVE, actor, or technique through the knowledge graph</div>'
+    '<div class="ap-sub">Trace threat paths from a CVE or actor through the knowledge graph</div>'
     '</div>',
     unsafe_allow_html=True,
 )
 
 # ── search ────────────────────────────────────────────────────────────────────
 with st.container(border=True):
-    mode_options = ["CVE", "Actor", "Technique"]
+    mode_options = ["CVE", "Actor"]
+    _mode_widget_key = "ap_seg_mode" if hasattr(st, "segmented_control") else "ap_radio_mode"
+    if st.session_state.get(_mode_widget_key) not in mode_options:
+        st.session_state[_mode_widget_key] = "CVE"
     if hasattr(st, "segmented_control"):
         mode = st.segmented_control("Start type", mode_options, default="CVE",
                                     key="ap_seg_mode", label_visibility="collapsed")
     else:
         mode = st.radio("Start type", mode_options, horizontal=True, key="ap_radio_mode")
 
-    from_cve = from_actor = from_technique = None
+    # Cached paths belong to one start type; switching tabs must not show the prior graph/metrics.
+    if st.session_state.get("ap_results_mode") is None and st.session_state.get("ap_last_code") == 200:
+        ld = st.session_state.get("ap_last_data")
+        if isinstance(ld, dict):
+            sk = str((ld.get("start") or {}).get("kind") or "").strip().lower()
+            mapped = {"cve": "CVE", "actor": "Actor"}.get(sk)
+            if mapped:
+                st.session_state.ap_results_mode = mapped
+    rm = st.session_state.get("ap_results_mode")
+    if rm is not None and rm != mode:
+        _reset_results()
+
+    from_cve = from_actor = None
     c_input, c_hops, c_limit, c_btn = st.columns([3, 1, 1, 1])
 
     with c_input:
         if mode == "CVE":
             from_cve = st.text_input("CVE ID", value="CVE-2024-21413", key="ap_from_cve")
-        elif mode == "Actor":
+        else:
             acode, arows, aerr = _load_actors(base)
             if acode == 200 and arows:
                 lbl_list = ["— Select an actor —"] + [_actor_label(r) for r in arows]
@@ -538,11 +555,16 @@ with st.container(border=True):
                 if aerr:
                     st.caption(f"Could not load actor list (HTTP {acode}). Enter manually.")
                 from_actor = st.text_input("Actor name or ID", value="", key="ap_from_actor_fallback")
-        else:
-            from_technique = st.text_input("Technique ID", value="T1059", key="ap_from_tech")
 
     with c_hops:
-        max_hops = st.number_input("Max hops", min_value=1, max_value=6, value=3, step=1)
+        max_hops = st.number_input(
+            "Max hops",
+            min_value=1,
+            max_value=8,
+            value=3,
+            step=1,
+            key="ap_max_hops",
+        )
     with c_limit:
         limit = st.number_input("Limit", min_value=1, max_value=25, value=10, step=1)
     with c_btn:
@@ -589,13 +611,10 @@ with st.container(border=True):
 if fetch:
     fc = (st.session_state.get("ap_from_cve") or from_cve or "").strip() or None if mode == "CVE" else None
     fa = (from_actor or "").strip() or None if mode == "Actor" else None
-    ft = (st.session_state.get("ap_from_tech") or from_technique or "").strip() or None if mode == "Technique" else None
 
     warn = None
     if mode == "Actor" and not fa:
         warn = "Select an actor or enter a name/ID."
-    elif mode == "Technique" and not ft:
-        warn = "Enter a technique ID (e.g. T1059)."
     elif mode == "CVE" and not fc:
         warn = "Enter a CVE ID."
 
@@ -606,12 +625,13 @@ if fetch:
         _reset_results()
         with st.spinner("Fetching attack paths…"):
             code, data, err = get_attack_path(
-                base, from_cve=fc, from_actor=fa, from_technique=ft,
+                base, from_cve=fc, from_actor=fa,
                 max_hops=int(max_hops), limit=int(limit),
             )
         st.session_state.ap_last_code = code
         st.session_state.ap_last_data = data
         st.session_state.ap_last_err  = err or ""
+        st.session_state.ap_results_mode = mode
         # ap_detail_visible stays False — user must click CVE profile button
 
 # ── display ───────────────────────────────────────────────────────────────────
@@ -632,7 +652,7 @@ if code == 200 and not isinstance(data, dict):
 if code is None:
     st.markdown(
         '<div class="ap-ready"><div class="ap-ready-title">Ready to explore</div>'
-        '<div class="ap-ready-sub">Enter a CVE, actor, or technique above and click Fetch paths</div></div>',
+        '<div class="ap-ready-sub">Enter a CVE or actor above and click Fetch paths</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -646,9 +666,11 @@ elif code == 200 and isinstance(data, dict):
     start_value = str(start.get("value") or "")
 
     if path_count == 0:
+        hint = "<p>Try increasing max hops or verify the start node exists in the graph.</p>"
         st.markdown(
             '<div class="ap-no-data"><div class="ap-no-data-title">No paths found</div>'
-            '<p>Try increasing max hops or verify the node exists in the graph.</p></div>',
+            + hint
+            + "</div>",
             unsafe_allow_html=True,
         )
 
@@ -694,7 +716,7 @@ elif code == 200 and isinstance(data, dict):
             detail_visible = st.session_state.get("ap_detail_visible", False)
 
             # CVE start → two columns (paths + detail panel)
-            # Actor / Technique start → full-width paths only, no detail panel, no button
+            # Actor start → full-width paths only, no detail panel, no button
             is_cve_start = start_kind.strip().lower() == "cve"
 
             if is_cve_start:

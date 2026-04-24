@@ -118,6 +118,40 @@ def test_list_graph_actors(mock_get_neo, client: TestClient):
     assert body["actors"][0]["actor_id"] == "G0007"
 
 
+@patch("app.routers.graph_attack_path.get_neo4j_service")
+def test_graph_relationship_types(mock_get_neo, client: TestClient):
+    neo = MagicMock()
+    mock_get_neo.return_value = neo
+    neo.execute_query.return_value = [
+        {"types": ["HAS_WEAKNESS", "REFERENCES_TECHNIQUE", "USES"]},
+    ]
+    r = client.get("/graph/relationship-types")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["references_technique_present"] is True
+    assert "HAS_WEAKNESS" in body["relationship_types"]
+    assert body["count"] == 3
+
+
+@patch("app.routers.graph_attack_path.get_neo4j_service")
+def test_attack_path_technique_missing_rel_type_returns_503(mock_get_neo, client: TestClient):
+    neo = MagicMock()
+    mock_get_neo.return_value = neo
+
+    def eq(q: str, _p: dict | None = None):
+        if "count(t) AS n" in q:
+            return [{"n": 1}]
+        raise RuntimeError(
+            "01N51: Relationship type REFERENCES_TECHNIQUE does not exist in database neo4j"
+        )
+
+    neo.execute_query.side_effect = eq
+    r = client.get("/graph/attack-path", params={"from_technique": "T1059"})
+    assert r.status_code == 503
+    assert "REFERENCES_TECHNIQUE" in r.json()["detail"]
+    assert "chunk-technique-links" in r.json()["detail"]
+
+
 @patch("app.routers.metrics.overview_counts")
 def test_metrics_overview(mock_overview, client: TestClient):
     mock_overview.return_value = {
@@ -163,15 +197,33 @@ def test_metrics_pipeline_runs(mock_runs, client: TestClient):
     assert body["items"][0]["source"] == "nvd"
 
 
-def test_attack_paths_cypher_technique_uses_undirected_relationships():
+def test_attack_paths_cypher_technique_uses_structured_cve_patterns():
     from app.services.cti_graph import attack_paths_cypher
 
     q, p = attack_paths_cypher(kind="technique", value="T1059", max_hops=4, limit=10)
     assert p == {"val": "T1059"}
     compact = "".join(q.split())
-    assert "OPTIONALMATCHp_long=(start)-[*1..4]-" in compact
-    assert "REFERENCES_TECHNIQUE" in compact
+    assert "OPTIONALMATCHp_rt=(start)<-[:REFERENCES_TECHNIQUE]-(cve_r:CVE)" in compact
+    assert "OPTIONALMATCHp_rw=(start)<-[:REFERENCES_TECHNIQUE]-(cve_w:CVE)-[:HAS_WEAKNESS]->(cwe:CWE)" in compact
+    assert "OPTIONALMATCHp_rx=" in compact  # mh >= 3
     assert "CALL{" not in compact
+
+
+def test_attack_paths_cypher_technique_skips_related_technique_when_max_hops_low():
+    from app.services.cti_graph import attack_paths_cypher
+
+    q, _ = attack_paths_cypher(kind="technique", value="T1059", max_hops=2, limit=5)
+    compact = "".join(q.split())
+    assert "p_rx" not in compact
+
+
+def test_attack_paths_cypher_technique_one_hop_is_cve_only():
+    from app.services.cti_graph import attack_paths_cypher
+
+    q, _ = attack_paths_cypher(kind="technique", value="T1059", max_hops=1, limit=5)
+    compact = "".join(q.split())
+    assert "p_rw" not in compact
+    assert "p_rx" not in compact
 
 
 def test_attack_paths_cypher_cve_stays_outgoing():

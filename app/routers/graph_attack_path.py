@@ -22,6 +22,34 @@ from app.services.cti_graph import (
 
 router = APIRouter(prefix="/graph", tags=["CTI", "Graph"])
 
+_REL_TYPES_CYPHER = """
+CALL db.relationshipTypes() YIELD relationshipType
+RETURN collect(relationshipType) AS types
+"""
+
+
+@router.get(
+    "/relationship-types",
+    summary="List relationship types present in Neo4j",
+    description=(
+        "Read-only catalog of relationship type names in the active database. "
+        "Useful to confirm whether ``REFERENCES_TECHNIQUE`` exists before debugging attack-path queries."
+    ),
+)
+async def list_neo4j_relationship_types() -> dict[str, Any]:
+    neo = get_neo4j_service()
+    rows = neo.execute_query(_REL_TYPES_CYPHER, {})
+    raw = (rows[0] or {}).get("types") if rows else None
+    types = neo4j_value_to_json(raw) or []
+    if not isinstance(types, list):
+        types = []
+    names = sorted({str(t) for t in types if t is not None})
+    return {
+        "relationship_types": names,
+        "count": len(names),
+        "references_technique_present": "REFERENCES_TECHNIQUE" in names,
+    }
+
 
 @router.get(
     "/actors",
@@ -58,7 +86,7 @@ async def get_attack_path(
     from_cve: Optional[str] = None,
     from_actor: Optional[str] = None,
     from_technique: Optional[str] = None,
-    max_hops: int = Query(3, ge=1, le=6),
+    max_hops: int = Query(3, ge=1, le=8),
     limit: int = Query(10, ge=1, le=25),
 ) -> dict[str, Any]:
     n_provided = sum(
@@ -103,7 +131,25 @@ async def get_attack_path(
         )
 
     q, p = attack_paths_cypher(kind=kind, value=value, max_hops=max_hops, limit=limit)
-    rows = neo.execute_query(q, p)
+    try:
+        rows = neo.execute_query(q, p)
+    except Exception as exc:
+        msg_l = str(exc).lower()
+        if kind == "technique" and "references_technique" in msg_l and (
+            "does not exist" in msg_l or "not found" in msg_l
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Neo4j has no REFERENCES_TECHNIQUE relationship type (no CVE→Technique "
+                    "edges have been merged yet). Run structured sync, in order: "
+                    "`poetry run python scripts/neo4j_sync_structured.py sync`, then "
+                    "`attack-techniques`, then `chunk-technique-links`. "
+                    "GET /graph/relationship-types lists what exists in your database."
+                ),
+            ) from exc
+        raise
+
     paths_raw = (rows[0] or {}).get("paths") if rows else None
     paths = neo4j_value_to_json(paths_raw) or []
 

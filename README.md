@@ -174,7 +174,8 @@ Structured routes read from **Neo4j** (CVE/CWE sync, ATT&CK techniques, chunk-de
 | GET | `/cve/{cve_id}` | `:CVE` properties plus `HAS_WEAKNESS`→CWE and `REFERENCES_TECHNIQUE`→Technique rows. |
 | GET | `/actor/{actor_id}` | `:Actor` matched by `name`, `actor_id`, `id`, or `external_id`, plus bounded neighborhood. |
 | GET | `/technique/{technique_id}` | `:Technique` by MITRE id (e.g. `T1059`), plus bounded neighborhood. |
-| GET | `/graph/attack-path` | Query params: **exactly one** of `from_cve`, `from_actor`, `from_technique`; optional `max_hops` (1–6), `limit` (1–25). |
+| GET | `/graph/attack-path` | Query params: **exactly one** of `from_cve`, `from_actor`, `from_technique`; optional `max_hops` (1–8), `limit` (1–25). |
+| GET | `/graph/relationship-types` | Read-only: all relationship type names in Neo4j plus `references_technique_present` (confirms CVE→Technique edges exist). |
 | POST | `/query` | **Stub** — returns `{ "status": "pending", "message": "..." }` until unstructured advisory data is in Neo4j. |
 | GET | `/brief/weekly` | **Stub** — same pending payload until advisory graph narrative is wired. |
 
@@ -184,9 +185,12 @@ Examples:
 curl -s "http://localhost:8000/cve/CVE-2024-21413"
 curl -s "http://localhost:8000/technique/T1059"
 curl -s "http://localhost:8000/graph/attack-path?from_cve=CVE-2024-21413&max_hops=3&limit=5"
+curl -s "http://localhost:8000/graph/relationship-types"
 curl -s -X POST "http://localhost:8000/query" -H "Content-Type: application/json" -d '{"query":"test"}'
 curl -s "http://localhost:8000/brief/weekly"
 ```
+
+**Neo4j / technique paths:** If Neo4j Browser or `/graph/attack-path?from_technique=…` reports that **`REFERENCES_TECHNIQUE` does not exist**, no CVE→Technique edges have been merged yet. That type is created only by **`run_chunk_technique_link_sync`** (Snowflake `advisory_chunks` co-occurrence). After CVE and technique nodes exist, run: `poetry run python scripts/neo4j_sync_structured.py chunk-technique-links` (or the Airflow `chunk_technique_links_sync` task). Use **`GET /graph/relationship-types`** to confirm the type appears.
 
 ## Streamlit CTI console
 

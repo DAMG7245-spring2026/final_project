@@ -72,6 +72,61 @@ Heuristics:
 Always include a one-sentence `reasoning` explaining which heuristic fired."""
 
 
+RELEVANCE_GUARD_PROMPT = """You are a gatekeeper for a Cyber Threat Intelligence (CTI) question-answering system.
+
+Decide whether the user's input is a genuine cybersecurity / threat-intelligence question
+that this system can answer. Return structured output {is_relevant, reason}.
+
+Mark is_relevant=true for:
+- Questions about threat actors, malware, CVEs, TTPs, campaigns, vulnerabilities
+- Questions about CISA advisories, mitigations, detections, or incident response
+- Questions about specific named entities in a CTI context
+
+Mark is_relevant=false for:
+- Greetings, small talk, or test inputs (e.g. "hi", "hello", "test")
+- Questions completely unrelated to cybersecurity
+- Nonsensical or empty-meaning inputs"""
+
+
+class RelevanceDecision(BaseModel):
+    is_relevant: bool = Field(description="True if the question is CTI-related.")
+    reason: str = Field(description="One sentence explaining the decision.")
+
+
+OFF_TOPIC_REPLY = (
+    "I'm a Cyber Threat Intelligence assistant. "
+    "Please ask a question related to threat actors, malware, CVEs, "
+    "advisories, or other cybersecurity topics."
+)
+
+
+def _check_relevance(question: str) -> bool:
+    """Return False if the question is clearly off-topic for CTI."""
+    router = get_llm_router()
+    try:
+        record = router.complete(
+            task=LLMTask.RAG_ROUTING,
+            messages=[
+                {"role": "system", "content": RELEVANCE_GUARD_PROMPT},
+                {"role": "user", "content": question},
+            ],
+            response_format=RelevanceDecision,
+            temperature=0,
+            max_tokens=100,
+            extra_log={"stage": "relevance_guard"},
+        )
+        content = getattr(record.response.choices[0].message, "content", None)
+        if not content:
+            return True
+        parsed = RelevanceDecision.model_validate_json(content)
+        if not parsed.is_relevant:
+            log.info("relevance_guard_rejected", reason=parsed.reason)
+        return parsed.is_relevant
+    except Exception:
+        log.warning("relevance_guard_failed", exc_info=True)
+        return True  # fail open
+
+
 class RouteDecision(BaseModel):
     """Structured output for the route classifier.
 
@@ -176,6 +231,19 @@ class RAGRouterService:
                 force_route=force_route,
                 disable_fallback=disable_fallback,
             )
+
+            if not _check_relevance(question):
+                return {
+                    "answer": OFF_TOPIC_REPLY,
+                    "route": "text",
+                    "route_reasoning": "off_topic",
+                    "route_was_forced": False,
+                    "fallback_triggered": False,
+                    "cypher": None,
+                    "graph_row_count": None,
+                    "graph_results": None,
+                    "chunks": None,
+                }
 
             if force_route is not None:
                 route: Route = force_route
@@ -364,6 +432,10 @@ class RAGRouterService:
         Routing + retrieval run synchronously first; only the answer-generation
         LLM call is streamed. Yields raw token strings.
         """
+        if not _check_relevance(question):
+            yield OFF_TOPIC_REPLY
+            return
+
         route: Route
         if force_route is not None:
             route = force_route

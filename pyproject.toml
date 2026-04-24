@@ -48,6 +48,9 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --cov=app --cov=ingestion --cov-report=term-missing"
+markers = [
+    "integration: hits real Snowflake/Neo4j; needs credentials in .env. Run with `pytest -m integration`. Excluded by default via `-m 'not integration'` in CI.",
+]
 
 [tool.black]
 line-length = 88

@@ -9,9 +9,9 @@ Renders the hybrid-search evaluation produced by
   * classifier (MCP) agreement by gold doc_type (bar)
   * golden-set explorer + failure inspection
 
-Data sources:
-  * data/vectordb_eval/report_prompt.md  — tables from the eval run
-  * data/vectordb_eval/golden.jsonl      — 125-query golden set
+Data sources (bundled with the streamlit image so the page works inside Docker):
+  * streamlit_cti/eval_artifacts/report_prompt.md  — tables from the eval run
+  * streamlit_cti/eval_artifacts/golden.jsonl      — 125-query golden set
 """
 
 from __future__ import annotations
@@ -28,8 +28,7 @@ import streamlit as st
 
 st.set_page_config(page_title="CTI — VectorDB Eval", layout="wide")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EVAL_DIR = PROJECT_ROOT / "data" / "vectordb_eval"
+EVAL_DIR = Path(__file__).resolve().parents[1] / "eval_artifacts"
 REPORT_PATH = EVAL_DIR / "report_prompt.md"
 GOLDEN_PATH = EVAL_DIR / "golden.jsonl"
 

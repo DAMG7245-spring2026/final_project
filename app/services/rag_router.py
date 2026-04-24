@@ -433,6 +433,7 @@ class RAGRouterService:
         LLM call is streamed. Yields raw token strings.
         """
         if not _check_relevance(question):
+            yield json.dumps({"route": "text", "cypher": None}) + "\n"
             yield OFF_TOPIC_REPLY
             return
 
@@ -462,6 +463,11 @@ class RAGRouterService:
                 chunks = self._hybrid_search_safe(question)
         else:
             chunks = self._hybrid_search_safe(question)
+
+        # Emit metadata as the first line so the client can display route/cypher
+        # before the answer tokens arrive. Format: single-line JSON + "\n".
+        # json.dumps escapes any newlines inside cypher, keeping the line unambiguous.
+        yield json.dumps({"route": route, "cypher": cypher}) + "\n"
 
         if retrieval_error and not graph_results and not chunks:
             yield retrieval_error

@@ -11,7 +11,7 @@ WE ATTEST THAT WE HAVEN'T USED ANY OTHER STUDENTS' WORK IN OUR ASSIGNMENT AND AB
 ## Links
 
 - Video: https://youtu.be/6Dxqd9D894g
-- Website: http://35.93.255.114:8501/
+- Website: http://44.249.190.227:8501
 - Google Doc: https://docs.google.com/document/d/1DCMEa1o1iLaozGY0VpRLzGYv_xMwoFTxowT8HaJmbcA
 - Google colab: https://codelabs-preview.appspot.com/?file_id=1DCMEa1o1iLaozGY0VpRLzGYv_xMwoFTxowT8HaJmbcA#1
 
